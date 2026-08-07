@@ -101,14 +101,30 @@ CR keeps each gate unambiguous, and keeps the two traffic sources separable in L
 
 ### What this costs, honestly
 
-Cloudflare OS signs its users in with Cloudflare Access, so it holds no Keycloak token to
-forward, and its model configuration accepts only a base URL and a key. The key is therefore
+Cloudflare OS's model configuration accepts only a base URL and a key. The key is therefore
 **per-deployment, not per-user**: this traffic attributes to `cloudflare-os` in Loki, not to the
-person who wrote the prompt. Per-user attribution for model calls would need Cloudflare OS to
-carry a Keycloak identity, which the Access sign-in method does not give it.
+person who wrote the prompt.
 
-What it still buys: the Anthropic key never leaves agentgateway, rotation is one Secrets Manager
-write, and revoking the whole surface is deleting one Grant.
+Note that the MCP path *does* attribute per user, so the limit is not that Cloudflare OS lacks a
+usable identity. The two differ in how the credential is held. `gatekeeper-mcp` stores a full
+OAuth grant — refresh token and expiry — in a per-user account Durable Object and mints a fresh
+access token on demand, which is why it keeps working for scheduled and background turns long
+after the browser consent. `AiModelConfig` holds an inert string with no refresh path.
+
+Per-user model attribution is therefore a provisioning and lifecycle problem, not an identity
+one, and three things stand in the way: agentgateway's `apiKey` Identity is a single static key
+from one ESO secret with no per-user issuance; a static config field cannot hold a credential
+that expires, so it would have to be N long-lived per-user secrets rather than one rotatable
+deployment key; and every user would paste a credential before they could use AI at all.
+
+The real fix is upstream and structural — Cloudflare OS modelling an AI provider the way it
+already models a connected account, with a Durable Object owning the grant, exactly as
+`gatekeeper-mcp` does. Chaining Keycloak behind Cloudflare Access does **not** help: Access
+issues its own Cloudflare-signed assertion and never forwards the upstream provider's token, so
+the Worker gains no credential it could pass on.
+
+What the shared key still buys: the Anthropic key never leaves agentgateway, rotation is one
+Secrets Manager write, and revoking the whole surface is deleting one Grant.
 
 ### Before enabling it
 
