@@ -9,17 +9,21 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // One deployment per checkout; use separate worktrees for concurrent deploys.
 const generatedName = "wrangler.prod.jsonc";
 const generatedPaths = {
+  router: join(root, "cloudflare-os/packages/router", generatedName),
   workshop: join(root, "cloudflare-os/packages/workshop-backend", generatedName),
   context: join(root, "cloudflare-os/packages/gatekeeper-context", generatedName),
   customGatekeeper: join(root, "packages/custom-gatekeeper", generatedName),
+  mcpGatekeeper: join(root, "cloudflare-os/packages/gatekeeper-mcp", generatedName),
   errorReporter: join(root, "packages/error-reporter", generatedName),
 };
 
 const requiredPaths = [
   "accountId",
+  "workers.router.name",
   "workers.workshop.name",
   "workers.context.name",
   "workers.customGatekeeper.name",
+  "mcp.enabled",
   "access.issuer",
   "access.audience",
   "access.admins",
@@ -47,6 +51,8 @@ const errorReportingPaths = [
   "errorReporting.environment",
 ];
 
+const mcpPaths = ["workers.mcpGatekeeper.name"];
+
 const resourcePaths = [
   "context.kvNamespaceId",
   "resources.blueprintsKvNamespaceId",
@@ -63,6 +69,7 @@ export function validateConfig(config) {
     ...requiredPaths,
     ...(config.aiGateway?.enabled ? aiGatewayPaths : []),
     ...(config.errorReporting?.enabled ? errorReportingPaths : []),
+    ...(config.mcp?.enabled ? mcpPaths : []),
   ];
   for (const path of activePaths) {
     const value = valueAt(config, path);
@@ -93,6 +100,12 @@ export function validateConfig(config) {
       errorReporting: { enabled: false },
     };
   }
+  if (!config.mcp.enabled) {
+    activeConfig = {
+      ...activeConfig,
+      workers: { ...activeConfig.workers, mcpGatekeeper: undefined },
+    };
+  }
   const placeholder = JSON.stringify(activeConfig).match(/<[^>]+>/)?.[0];
   if (placeholder) throw new Error(`Replace deployment placeholder ${placeholder}.`);
 
@@ -101,6 +114,7 @@ export function validateConfig(config) {
     "aiGateway.enabled",
     "aiGateway.providers",
     "errorReporting.enabled",
+    "mcp.enabled",
     "observability.enabled",
     "observability.headSamplingRate",
     "observability.logs.invocationLogs",
@@ -117,29 +131,51 @@ export function validateConfig(config) {
       config.aiGateway.enabled && !/^[a-f\d]{32}$/i.test(config.aiGateway.accountId)) {
     throw new Error("Cloudflare account IDs must be 32 hexadecimal characters.");
   }
+  const inactiveWorkers = {
+    errorReporter: !config.errorReporting.enabled,
+    mcpGatekeeper: !config.mcp.enabled,
+  };
   const workerNames = Object.entries(config.workers)
-    .filter(([key]) => key !== "errorReporter" || config.errorReporting.enabled)
+    .filter(([key]) => !inactiveWorkers[key])
     .map(([, worker]) => worker.name);
   if (new Set(workerNames).size !== workerNames.length) {
-    throw new Error("Workshop, Context, and custom Gatekeeper Worker names must be unique.");
+    throw new Error("Every deployed Worker name must be unique.");
   }
   if (!workerNames.every((name) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name))) {
     throw new Error("Worker names must use lowercase letters, numbers, and hyphens.");
   }
 
-  const route = config.workers.workshop.route;
+  // The router owns the only public route; every other Worker is reached over a service
+  // binding, so a route on one of them would be a way around Access.
+  const routed = Object.entries(config.workers)
+    .filter(([key, worker]) => key !== "router" && worker?.route);
+  if (routed.length) {
+    throw new Error(`Only the router may have a route: remove workers.${routed[0][0]}.route.`);
+  }
+
+  const route = config.workers.router.route;
   if (!route || Boolean(route.workersDev) === Boolean(route.customDomain)) {
-    throw new Error("Set exactly one Workshop route: workersDev or customDomain.");
+    throw new Error("Set exactly one router route: workersDev or customDomain.");
   }
   if (route.workersDev !== undefined && route.workersDev !== true) {
-    throw new Error("Workshop workersDev must be boolean true when selected.");
+    throw new Error("Router workersDev must be boolean true when selected.");
   }
   if (route.customDomain !== undefined && typeof route.customDomain !== "string") {
-    throw new Error("Workshop customDomain must be a string.");
+    throw new Error("Router customDomain must be a string.");
   }
   const hostnamePattern = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
   if (route.customDomain && !hostnamePattern.test(route.customDomain)) {
-    throw new Error("Workshop customDomain must be a lowercase hostname.");
+    throw new Error("Router customDomain must be a lowercase hostname.");
+  }
+
+  if (typeof config.mcp.enabled !== "boolean") {
+    throw new Error("MCP Gatekeeper enabled must be a boolean.");
+  }
+  // The connector registers https://<host>/gatekeeper/mcp/oauth as its OAuth redirect_uri
+  // before the Worker is ever reached, so the hostname has to be known at config time. A
+  // workers.dev address is only knowable after the first deploy.
+  if (config.mcp.enabled && !route.customDomain) {
+    throw new Error("The MCP Gatekeeper requires workers.router.route.customDomain.");
   }
 
   const issuer = new URL(config.access.issuer);
@@ -230,16 +266,33 @@ function setCommon(config, deployment, name, route = { workersDev: false }) {
   };
 }
 
+// Public paths the router must handle itself rather than serve from static assets. Upstream's
+// base config already lists these; repeating them here keeps the generated config explicit and
+// lets a base-config change show up as a diff during review.
+const ROUTER_WORKER_FIRST = [
+  "/api",
+  "/api/*",
+  "/blueprint-screenshot",
+  "/blueprint-screenshot/*",
+  "/gatekeeper/*",
+];
+
 export function generateConfigs(config, bases) {
   validateConfig(config);
+  const router = structuredClone(bases.router);
   const workshop = structuredClone(bases.workshop);
   const context = structuredClone(bases.context);
   const customGatekeeper = structuredClone(bases.customGatekeeper);
+  const mcpGatekeeper = config.mcp.enabled
+    ? structuredClone(bases.mcpGatekeeper)
+    : undefined;
   const errorReporter = config.errorReporting.enabled
     ? structuredClone(bases.errorReporter)
     : undefined;
 
-  setCommon(workshop, config, config.workers.workshop.name, config.workers.workshop.route);
+  // The Workshop is private: no route, no assets. Both belong to the router now.
+  setCommon(workshop, config, config.workers.workshop.name);
+  delete workshop.assets;
   workshop.vars = {
     ADMINS: config.access.admins,
     CF_ACCESS_ISS: config.access.issuer.replace(/\/$/, ""),
@@ -287,6 +340,13 @@ export function generateConfigs(config, bases) {
       service: config.workers.customGatekeeper.name,
       entrypoint: "GatekeeperVendor",
     },
+    // The backend discovers Gatekeepers by scanning GATEKEEPER_* bindings, so binding the MCP
+    // connector here is the whole of installing it.
+    ...(config.mcp.enabled ? [{
+      binding: "GATEKEEPER_MCP",
+      service: config.workers.mcpGatekeeper.name,
+      entrypoint: "GatekeeperVendor",
+    }] : []),
   ];
   workshop.kv_namespaces = [
     { binding: "BLUEPRINTS", ...(config.resources.blueprintsKvNamespaceId
@@ -298,12 +358,6 @@ export function generateConfigs(config, bases) {
     { binding: "BLUEPRINT_CONTENT", ...(config.resources.blueprintContentBucket
       ? { bucket_name: config.resources.blueprintContentBucket } : {}) },
   ];
-  workshop.assets = {
-    directory: "../workshop-frontend/dist",
-    not_found_handling: "single-page-application",
-    run_worker_first: ["/api", "/api/*", "/blueprint-screenshot/*"],
-  };
-
   setCommon(context, config, config.workers.context.name);
   context.kv_namespaces = [
     { binding: "CONTEXT_COLLECTIONS", ...(config.context.kvNamespaceId
@@ -316,11 +370,51 @@ export function generateConfigs(config, bases) {
     CUSTOM_MESSAGE: config.customGatekeeper.message,
   };
 
+  if (mcpGatekeeper) {
+    setCommon(mcpGatekeeper, config, config.workers.mcpGatekeeper.name);
+    mcpGatekeeper.vars = {
+      ...mcpGatekeeper.vars,
+      // Where this Worker is publicly reachable. The connector derives both its own path
+      // prefix and the OAuth redirect_uri (<BASE_URL>/oauth) from it, so it must match the
+      // router's /gatekeeper/<binding-suffix> prefix exactly.
+      BASE_URL: `https://${config.workers.router.route.customDomain}/gatekeeper/mcp`,
+      // Keep upstream's explicit "false": http:// and private-network endpoints stay refused.
+      MCP_ALLOW_INSECURE: "false",
+    };
+  }
+
   if (errorReporter) {
     setCommon(errorReporter, config, config.workers.errorReporter.name);
   }
 
-  return { workshop, context, customGatekeeper, ...(errorReporter && { errorReporter }) };
+  // The router is the public origin: it serves the frontend and fans every other path out to
+  // the private Workers over service bindings.
+  setCommon(router, config, config.workers.router.name, config.workers.router.route);
+  router.services = [
+    { binding: "WORKSHOP_BACKEND", service: config.workers.workshop.name },
+    // No entrypoint: the router forwards raw HTTP to the Gatekeeper's default fetch handler,
+    // which is where its OAuth callback lives.
+    ...(config.mcp.enabled ? [{
+      binding: "GATEKEEPER_MCP",
+      service: config.workers.mcpGatekeeper.name,
+    }] : []),
+  ];
+  router.assets = {
+    directory: "../workshop-frontend/dist",
+    binding: "ASSETS",
+    not_found_handling: "single-page-application",
+    run_worker_first: ROUTER_WORKER_FIRST,
+  };
+
+  return {
+    workshop,
+    context,
+    customGatekeeper,
+    ...(mcpGatekeeper && { mcpGatekeeper }),
+    ...(errorReporter && { errorReporter }),
+    // Last: every binding it names must already exist.
+    router,
+  };
 }
 
 async function readJsonc(path) {
@@ -361,6 +455,9 @@ function requireSubmodule() {
 function build(config) {
   run(["--dir", "cloudflare-os", "--filter", "@gadgets/gatekeeper-context", "build"]);
   run(["--dir", "packages/custom-gatekeeper", "run", "build"]);
+  if (config.mcp.enabled) {
+    run(["--dir", "cloudflare-os", "--filter", "@gadgets/mcp-gatekeeper", "build"]);
+  }
   if (config.errorReporting.enabled) {
     run(["--dir", "packages/error-reporter", "run", "build"]);
   }
@@ -369,15 +466,18 @@ function build(config) {
     VITE_CF_ACCESS_MODE: "true",
   });
   run(["--dir", "cloudflare-os", "--filter", "@gadgets/workshop-backend", "build"]);
+  run(["--dir", "cloudflare-os", "--filter", "@gadgets/router", "build"]);
 }
 
 async function main() {
   requireSubmodule();
   const config = await readDeployment(join(root, "deployment.jsonc"));
   const generated = generateConfigs(config, {
+    router: await readJsonc(join(root, "cloudflare-os/packages/router/wrangler.jsonc")),
     workshop: await readJsonc(join(root, "cloudflare-os/packages/workshop-backend/wrangler.jsonc")),
     context: await readJsonc(join(root, "cloudflare-os/packages/gatekeeper-context/wrangler.jsonc")),
     customGatekeeper: await readJsonc(join(root, "packages/custom-gatekeeper/wrangler.jsonc")),
+    mcpGatekeeper: await readJsonc(join(root, "cloudflare-os/packages/gatekeeper-mcp/wrangler.jsonc")),
     errorReporter: await readJsonc(join(root, "packages/error-reporter/wrangler.jsonc")),
   });
 
@@ -397,8 +497,15 @@ async function main() {
       join(root, "cloudflare-os/packages/gatekeeper-context"));
     run(["exec", "wrangler", "deploy", "--config", generatedName, ...deployArgs],
       join(root, "packages/custom-gatekeeper"));
+    if (config.mcp.enabled) {
+      run(["exec", "wrangler", "deploy", "--config", generatedName, ...deployArgs],
+        join(root, "cloudflare-os/packages/gatekeeper-mcp"));
+    }
     run(["exec", "wrangler", "deploy", "--config", generatedName, ...deployArgs],
       join(root, "cloudflare-os/packages/workshop-backend"));
+    // Last: it is the only Worker with a public route, and it binds every one above.
+    run(["exec", "wrangler", "deploy", "--config", generatedName, ...deployArgs],
+      join(root, "cloudflare-os/packages/router"));
   } finally {
     await Promise.all(Object.values(generatedPaths).map((path) => rm(path, { force: true })));
   }

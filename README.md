@@ -2,10 +2,11 @@
   <img src="docs/assets/cloudflareOS.svg" alt="Cloudflare OS" width="480">
 </p>
 
-<h1 align="center">Customized for your Company</h1>
+<h1 align="center">Conveo Studio</h1>
 
 <p align="center">
-  Deploy a pinned Cloudflare OS release with branding, sign-in, integrations, routes, and upgrades under your control.
+  A pinned Cloudflare OS release on <code>studio.conveo.ai</code>, signed in with Okta through Cloudflare Access,
+  and wired into <a href="https://github.com/conveo/agentgateway">agentgateway</a> for company tools and models.
 </p>
 
 <p align="center">
@@ -20,40 +21,50 @@
 
 ## Four steps
 
-1. Install the dependencies and run `pnpm exec wrangler login`.
-2. Fill in `deployment.jsonc`: account ID, Worker names, hostname, Access audience, admin emails.
-3. Run `pnpm check`, then `pnpm deploy`.
-4. Open `/admin` and set the site name, logo, and accent color; branding needs no redeploy.
+1. Create the Cloudflare Access application for `studio.conveo.ai` in the Zero Trust dashboard and copy its AUD tag.
+2. Fill in the two remaining placeholders in `deployment.jsonc`: the Cloudflare account ID and that AUD.
+3. Install the dependencies, run `pnpm exec wrangler login`, then `pnpm check` and `pnpm deploy`.
+4. Open `/admin` and set branding and connector policy; neither needs a redeploy.
 
-[Deploy](#deploy) and [Customization](#customization) expand each step. Everything else on this page is optional reading.
+[Deploy](#deploy) and [Customization](#customization) expand each step. [agentgateway](docs/agentgateway.md) covers the integration and is the part specific to Conveo.
 
 ## Overview
 
 This repository adds deployment controls around a pinned [Cloudflare OS](https://github.com/cloudflare/cloudflare-os) release without modifying the upstream source.
 
-| Control | What you own |
+| Control | What Conveo owns |
 | --- | --- |
 | Branding | Site name, logo, and accent color, changed in [`/admin`](docs/customization.md#branding) without a deploy |
-| Identity | The sign-in method and administrator allowlist; this starter deploys [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) mode |
-| Routing | A production [Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) or a `workers.dev` evaluation route |
+| Identity | [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) over Okta; the application and its policy are [created in the Zero Trust dashboard](docs/customization.md#cloudflare-access) |
+| Routing | `studio.conveo.ai`, a [Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) on the Cloudflare-managed `conveo.ai` zone |
 | Data | Existing KV/R2 resources or [automatic provisioning](https://developers.cloudflare.com/workers/wrangler/configuration/#automatic-provisioning) |
-| Integrations | Wrapper-owned Gatekeepers and service bindings without patching upstream |
-| AI | No platform model by default; opt into [Workers AI](https://developers.cloudflare.com/workers-ai/) and [AI Gateway](https://developers.cloudflare.com/ai-gateway/) when needed |
+| Integrations | Company tools through [agentgateway](docs/agentgateway.md), per user, plus wrapper-owned Gatekeepers |
+| AI | Models through [agentgateway's Anthropic route](docs/agentgateway.md#models) rather than a Cloudflare-funded catalog |
 | Operations | [Structured logs, traces, explicit error reports](docs/observability.md), validation, deployment order, and upgrades |
 
 ### Architecture
 
-<img src="docs/assets/architecture.svg" alt="Cloudflare OS deployment architecture: users sign in and reach the pinned Cloudflare OS release, holding the Workshop kernel, Gadgets, Blueprints, and the default Gatekeepers. Service bindings connect it to the Workers this repository owns: optional AI, custom Gatekeepers, the Error Reporter, and KV and R2 storage.">
+Six Workers. Only the router is public:
 
-The deploy command derives temporary Wrangler files from upstream base configs, builds the frontend in Cloudflare Access mode, deploys the private Error Reporter and Gatekeepers before the Workshop, and removes generated files even on failure. Secrets never enter tracked configuration.
+```
+                        Cloudflare Access (Okta)
+                                  │
+studio.conveo.ai ────────────────► router
+                                  ├── /api/*              → workshop  (private)
+                                  │                            ├── context
+                                  │                            ├── custom gatekeeper
+                                  │                            ├── mcp gatekeeper
+                                  │                            └── error reporter
+                                  ├── /gatekeeper/mcp/*   → mcp gatekeeper (OAuth callback)
+                                  └── /*                  → frontend assets
 
-### If you only want branding
+mcp gatekeeper ──► mcp.ops.conveo.ai/<service> ──► agentgateway ──► Linear, Notion, Grafana, …
+                        (the user's own Okta identity, their own vendor token)
+```
 
-A hosted flow deploys the same upstream release to your Cloudflare account without this repository. It builds nothing locally, configures sign-in and your admin emails for you, and leaves the whole `/admin` surface intact: site name, logo, accent color, announcements, agent instructions, featured blueprints, and which connectors your users can reach. Built-in Gatekeepers such as GitHub and Google are still yours to connect with your own OAuth credentials.
+This is upstream's `router` topology rather than the starter's default of a publicly routed Workshop. It is what makes OAuth-capable Gatekeepers possible: their browser callbacks need a public URL, and the router gives every Gatekeeper one under a single hostname and a single Access application. Adding the GitHub, Google, or Slack Gatekeeper later is one service binding, not another hostname.
 
-<a href="https://os.cloudflare.app/deploy"><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare"></a>
-
-Anything past that needs your own code or settings, which is what this repository is for: custom Gatekeepers, customized error reporting, your own Worker names, reusing storage you already have, choosing how much logging to keep, and a pinned version you upgrade when you decide. Hosted deployments also run on a `workers.dev` address, so deploy from here if you want the app on your own domain, or the email Gatekeeper, which needs a zone. Come back when branding stops being enough.
+The deploy command derives temporary Wrangler files from upstream base configs, builds the frontend in Cloudflare Access mode, deploys every private Worker before the router that binds them, and removes generated files even on failure. Secrets never enter tracked configuration.
 
 ## Deploy
 
@@ -72,16 +83,21 @@ Your account needs [Workers](https://developers.cloudflare.com/workers/), [KV](h
 
 ### 2. Configure sign-in
 
-Cloudflare OS supports several sign-in methods. This starter deploys [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) mode, which verifies identity before a request reaches the Worker. See [Sign-in methods](docs/customization.md#sign-in-methods) for the alternatives and what switching involves.
+Cloudflare OS supports several sign-in methods. This deployment uses [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) mode, which verifies identity before a request reaches the Worker. See [Sign-in methods](docs/customization.md#sign-in-methods) for the alternatives and what switching involves.
 
-1. Choose a Workshop hostname in an [active Cloudflare zone](https://developers.cloudflare.com/dns/zone-setups/), such as `os.example.com`.
-2. Create a [self-hosted Access application](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) for that hostname.
-3. Copy its [application audience tag](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/#get-your-aud-tag).
-4. Open [`deployment.jsonc`](deployment.jsonc) and replace the active placeholders. Every control is annotated in place.
+The Access application is created **by hand**, in the Cloudflare Zero Trust dashboard under **Access → Applications**: a self-hosted application for `studio.conveo.ai`, session duration 24 hours, with an Allow policy listing the operators who will run this first deploy. See [Cloudflare Access](docs/customization.md#cloudflare-access) for the full field list.
 
-Wrangler creates DNS and TLS for the custom domain at deploy time. For an evaluation without a zone, switch the annotated route to `{ "workersDev": true }`.
+Nothing in this repository creates it — Wrangler owns routing and has no `access` command. Without it the Workshop refuses every `/api` call and the router still serves the frontend to anyone, so treat it as a prerequisite rather than a follow-up.
 
-### 3. Validate and deploy
+Put that AUD in `access.audience` in [`deployment.jsonc`](deployment.jsonc), and the team origin from Zero Trust settings in `access.issuer`. Every control in that file is annotated in place.
+
+Wrangler creates DNS and TLS for the custom domain at deploy time, so do not create that record by hand. For an evaluation without a zone, switch the annotated route to `{ "workersDev": true }`, which also means turning `mcp.enabled` off.
+
+### 3. Land the agentgateway change first
+
+The MCP connector registers `https://studio.conveo.ai/gatekeeper/mcp/oauth` with Keycloak the first time anyone connects an endpoint, and that host has to be trusted before then. Merge the `repairHosts` addition in [agentgateway](https://github.com/conveo/agentgateway)'s `chart/values.yaml` to `main` and let ArgoCD sync it. See [agentgateway](docs/agentgateway.md#rollout-order).
+
+### 4. Validate and deploy
 
 ```sh
 pnpm check
@@ -90,17 +106,20 @@ pnpm deploy
 
 With resource values left as `null`, Wrangler creates the three KV namespaces and R2 bucket automatically and reconnects them on later deploys. Set explicit IDs or a bucket name when the deployment must reuse existing resources.
 
-AI is disabled by default. The application can deploy without an AI Gateway or token; see [AI models](docs/customization.md#ai-models) to enable deployment-funded models.
+The platform AI catalog is off; models come from [agentgateway](docs/agentgateway.md#models). The application deploys without an AI Gateway or token.
 
 Backend error reporting is enabled without a vendor account. Explicit upstream issue events become structured logs in the private Error Reporter Worker; see [Observability and error reporting](docs/observability.md).
 
-### 4. Verify the deployment
+### 5. Verify the deployment
 
-- Open the Workshop hostname and confirm Access signs in with the expected identity.
-- Open `/admin`, confirm the email is an administrator, and set Context and Custom Gatekeepers to disabled, optional, or enabled.
+- Open `studio.conveo.ai` in a private window and confirm Access refuses an unauthenticated request, then signs in with the expected Okta identity.
+- Confirm the Access application actually covers this exact hostname. Because it is created by hand, a typo there does not error — it leaves the router unauthenticated. An unauthenticated request reaching the app instead of the Access login page is the symptom.
+- Confirm no other Worker answers on a public hostname — the router is the only route.
+- Open `/admin`, confirm the email is an administrator, and set Context, Custom, and MCP connectors to disabled, optional, or enabled deliberately.
+- Connect `https://mcp.ops.conveo.ai/<service>` through the MCP connector, complete the Okta sign-in, and confirm a tool call succeeds and appears in Loki under your own `jwt.email`.
 - Enable the Custom Gatekeeper, ask for deployment information, and confirm its read appears as an observation.
 - Open the Error Reporter Worker's [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) and verify its structured `error_report` query surface.
-- Review logs for the Workshop, Context, custom Gatekeeper, and Error Reporter Workers.
+- Review logs for the router, Workshop, Context, Gatekeeper, and Error Reporter Workers.
 
 ## Customization
 
@@ -108,6 +127,8 @@ Backend error reporting is enabled without a vendor account. Explicit upstream i
 | --- | --- | --- |
 | Site name, logo, color, announcements, instructions, connectors | `/admin` | No |
 | Sign-in, routes, AI, storage, observability, Worker identities | [`deployment.jsonc`](deployment.jsonc) | Yes |
+| Who may sign in at all | [Zero Trust dashboard](docs/customization.md#cloudflare-access) | No |
+| Company tools and models | [agentgateway](docs/agentgateway.md) | Sometimes |
 | Logs, traces, error destinations, browser reporting | [Observability guide](docs/observability.md) | Sometimes |
 | Organization APIs and capabilities | [`packages/custom-gatekeeper`](packages/custom-gatekeeper/README.md) | Yes |
 | Product behavior unavailable through Worker boundaries | Pinned upstream fork/commit | Yes |

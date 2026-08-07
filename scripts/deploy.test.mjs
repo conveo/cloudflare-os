@@ -7,11 +7,14 @@ import { generateConfigs, validateConfig } from "./deploy.mjs";
 const validConfig = {
   accountId: "0123456789abcdef0123456789abcdef",
   workers: {
-    workshop: { name: "acme-cloudflare-os", route: { customDomain: "os.example.com" } },
+    router: { name: "acme-cloudflare-os", route: { customDomain: "os.example.com" } },
+    workshop: { name: "acme-cloudflare-os-workshop" },
     context: { name: "acme-cloudflare-os-context" },
     customGatekeeper: { name: "acme-cloudflare-os-custom" },
+    mcpGatekeeper: { name: "acme-cloudflare-os-mcp" },
     errorReporter: { name: "acme-cloudflare-os-errors" },
   },
+  mcp: { enabled: true },
   access: {
     issuer: "https://acme.cloudflareaccess.com",
     audience: "access-audience",
@@ -42,9 +45,11 @@ const validConfig = {
 
 async function baseConfigs() {
   return {
+    router: await baseConfig("../cloudflare-os/packages/router/wrangler.jsonc"),
     workshop: await baseConfig("../cloudflare-os/packages/workshop-backend/wrangler.jsonc"),
     context: await baseConfig("../cloudflare-os/packages/gatekeeper-context/wrangler.jsonc"),
     customGatekeeper: await baseConfig("../packages/custom-gatekeeper/wrangler.jsonc"),
+    mcpGatekeeper: await baseConfig("../cloudflare-os/packages/gatekeeper-mcp/wrangler.jsonc"),
     errorReporter: {
       name: "error-reporter",
       observability: { enabled: true, logs: { invocation_logs: false } },
@@ -72,8 +77,16 @@ test("rejects destructive or malformed deployment values", () => {
   assert.throws(() => validateConfig(stringBoolean), /boolean/i);
 
   const invalidDomain = structuredClone(validConfig);
-  invalidDomain.workers.workshop.route.customDomain = "os.example.com/path";
+  invalidDomain.workers.router.route.customDomain = "os.example.com/path";
   assert.throws(() => validateConfig(invalidDomain), /hostname/i);
+
+  const routedWorkshop = structuredClone(validConfig);
+  routedWorkshop.workers.workshop.route = { customDomain: "direct.example.com" };
+  assert.throws(() => validateConfig(routedWorkshop), /only the router may have a route/i);
+
+  const mcpOnWorkersDev = structuredClone(validConfig);
+  mcpOnWorkersDev.workers.router.route = { workersDev: true };
+  assert.throws(() => validateConfig(mcpOnWorkersDev), /customDomain/i);
 
   const numericGateway = structuredClone(validConfig);
   numericGateway.aiGateway.workersAi.gateway = 42;
@@ -103,10 +116,9 @@ test("rejects destructive or malformed deployment values", () => {
 test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", async () => {
   const generated = generateConfigs(validConfig, await baseConfigs());
 
-  assert.equal(generated.workshop.name, "acme-cloudflare-os");
-  assert.deepEqual(generated.workshop.routes, [
-    { pattern: "os.example.com", custom_domain: true },
-  ]);
+  assert.equal(generated.workshop.name, "acme-cloudflare-os-workshop");
+  assert.equal(generated.workshop.routes, undefined);
+  assert.equal(generated.workshop.workers_dev, false);
   assert.deepEqual(generated.workshop.vars.ADMINS, ["admin@example.com"]);
   assert.equal(generated.workshop.vars.CF_ACCESS_ISS, validConfig.access.issuer);
   assert.equal(generated.workshop.vars.CF_ACCESS_AUD, validConfig.access.audience);
@@ -119,7 +131,11 @@ test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", a
       binding: "ERROR_REPORTER",
       service: "acme-cloudflare-os-errors",
       entrypoint: "ErrorReporter",
-      props: { service: "acme-cloudflare-os", environment: "production", release: "abc123" },
+      props: {
+        service: "acme-cloudflare-os-workshop",
+        environment: "production",
+        release: "abc123",
+      },
     },
     {
       binding: "GATEKEEPER_CONTEXT",
@@ -132,12 +148,13 @@ test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", a
       service: "acme-cloudflare-os-custom",
       entrypoint: "GatekeeperVendor",
     },
+    {
+      binding: "GATEKEEPER_MCP",
+      service: "acme-cloudflare-os-mcp",
+      entrypoint: "GatekeeperVendor",
+    },
   ]);
-  assert.deepEqual(generated.workshop.assets, {
-    directory: "../workshop-frontend/dist",
-    not_found_handling: "single-page-application",
-      run_worker_first: ["/api", "/api/*", "/blueprint-screenshot/*"],
-  });
+  assert.equal(generated.workshop.assets, undefined);
   assert.deepEqual(generated.workshop.kv_namespaces, [
     { binding: "BLUEPRINTS", id: "blueprints-kv-id" },
     { binding: "AVATARS", id: "avatars-kv-id" },
@@ -161,6 +178,58 @@ test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", a
   assert.equal(generated.workshop.services.some(
     (service) => service.binding === "FRONTEND_ERROR_REPORTER"), false);
   assert.equal(generated.workshop.ratelimits, undefined);
+});
+
+test("gives the router the only public route and the frontend assets", async () => {
+  const generated = generateConfigs(validConfig, await baseConfigs());
+
+  assert.equal(generated.router.name, "acme-cloudflare-os");
+  assert.deepEqual(generated.router.routes, [
+    { pattern: "os.example.com", custom_domain: true },
+  ]);
+  assert.deepEqual(generated.router.services, [
+    { binding: "WORKSHOP_BACKEND", service: "acme-cloudflare-os-workshop" },
+    { binding: "GATEKEEPER_MCP", service: "acme-cloudflare-os-mcp" },
+  ]);
+  assert.deepEqual(generated.router.assets, {
+    directory: "../workshop-frontend/dist",
+    binding: "ASSETS",
+    not_found_handling: "single-page-application",
+    run_worker_first: [
+      "/api",
+      "/api/*",
+      "/blueprint-screenshot",
+      "/blueprint-screenshot/*",
+      "/gatekeeper/*",
+    ],
+  });
+
+  // The router binds every other Worker, so it has to be deployed after all of them.
+  assert.equal(Object.keys(generated).at(-1), "router");
+});
+
+test("points the MCP Gatekeeper's OAuth callback at the router", async () => {
+  const generated = generateConfigs(validConfig, await baseConfigs());
+
+  assert.equal(generated.mcpGatekeeper.name, "acme-cloudflare-os-mcp");
+  assert.equal(generated.mcpGatekeeper.vars.BASE_URL,
+    "https://os.example.com/gatekeeper/mcp");
+  assert.equal(generated.mcpGatekeeper.vars.MCP_ALLOW_INSECURE, "false");
+  assert.equal(generated.mcpGatekeeper.routes, undefined);
+});
+
+test("omits the MCP Gatekeeper when it is disabled", async () => {
+  const config = structuredClone(validConfig);
+  config.mcp = { enabled: false };
+  config.workers.mcpGatekeeper = { name: "<UNUSED_MCP_WORKER_NAME>" };
+
+  const generated = generateConfigs(config, await baseConfigs());
+
+  assert.equal(generated.mcpGatekeeper, undefined);
+  assert.equal(generated.workshop.services.some(
+    (service) => service.binding === "GATEKEEPER_MCP"), false);
+  assert.equal(generated.router.services.some(
+    (service) => service.binding === "GATEKEEPER_MCP"), false);
 });
 
 test("omits disabled backend error reporting", async () => {
