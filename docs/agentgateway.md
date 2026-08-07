@@ -126,22 +126,31 @@ the Worker gains no credential it could pass on.
 What the shared key still buys: the Anthropic key never leaves agentgateway, rotation is one
 Secrets Manager write, and revoking the whole surface is deleting one Grant.
 
-### Before enabling it
+### Status: live and verified
 
-One prerequisite this repository cannot satisfy on its own: **create the key** at
-`<eso.pathPrefix>/cloudflare-os-anthropic-key` in AWS Secrets Manager, materialized into the
-cluster by External Secrets.
+Enabled on 2026-08-07 and exercised end to end — a request to
+`https://gateway.ops.conveo.ai/anthropic-cloudflare-os/v1/messages` carrying the key in
+`x-api-key` returned 200. That single call is what proves the whole chain: the gate accepted
+the credential from a non-default header, and the upstream Anthropic call succeeded.
 
-The header question this section used to leave open is settled. Cloudflare OS's Anthropic
-transport constructs the Anthropic SDK with `apiKey` set and `authToken` null, so it always
-sends the credential as `x-api-key` and has no configuration seam to send anything else.
-agentgateway's `apiKeyAuthentication` defaults to `Authorization` with the `Bearer ` prefix —
-but the pinned v1.4.1 CRD carries `location.header.name`, so the gate can be told to read
-`x-api-key` instead. agentgateway's `llm.anthropic.cloudflareOs.header` does exactly that.
+Two details are worth keeping, because both are silent failure modes rather than loud ones.
 
-Note the CRD validates `exactly one of [header queryParameter cookie expression]`, so the
-location is emitted only when a header is named; leaving it unset keeps the data-plane default
-rather than sending an empty object.
+**The header.** Cloudflare OS's Anthropic transport constructs the SDK with `apiKey` set and
+`authToken` null, so it always sends `x-api-key` and has no configuration seam to send anything
+else. agentgateway's `apiKeyAuthentication` defaults to `Authorization` with the `Bearer `
+prefix, so the gate had to move rather than the caller: `llm.anthropic.cloudflareOs.header`
+compiles to `apiKeyAuthentication.location.header.name`. A mismatch here is a flat 401 with
+nothing to indicate the header was the cause.
+
+**The secret's shape.** The rendered `ExternalSecret` uses `remoteRef.property: "api-key"`, so
+the Secrets Manager entry at `<eso.pathPrefix>/cloudflare-os-anthropic-key` must be a JSON
+object carrying an `api-key` field — not a bare string. A bare string materializes an empty
+Kubernetes Secret, and the route then denies every caller: fail-closed, but for a reason that
+looks nothing like the cause.
+
+Rotation is one Secrets Manager write, and revoking the whole surface is deleting the
+`anthropic-cloudflare-os-access` Grant. Both are coordinated changes, not silent ones: the key
+also lives in each user's model configuration, which does not refresh.
 
 ## What was not integrated, and why
 
