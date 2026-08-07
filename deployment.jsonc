@@ -45,9 +45,9 @@
   // router still serves the frontend to anyone. Paste its AUD tag below.
   // Reference: docs/customization.md#sign-in-methods
   "access": {
-    "issuer": "https://<CLOUDFLARE_ACCESS_TEAM>.cloudflareaccess.com",
+    "issuer": "https://conveo.cloudflareaccess.com",
     "audience": "988eba4650d753286f1d0c5a081f98e383c9c2edc4be40eded13f9d20b2556ae",
-    "admins": ["ludo@conveo.ai"]
+    "admins": ["ludovic@conveo.ai"]
   },
 
   // MCP Gatekeeper — the agentgateway integration. Deploys upstream's generic MCP connector,
