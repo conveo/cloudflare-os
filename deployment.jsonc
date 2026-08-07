@@ -3,7 +3,7 @@
   // Conveo's Cloudflare account — the one holding the conveo.ai zone that
   // gitops/terraform/hub already manages (cloudflare-cache.tf).
   // Find it: https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/
-  "accountId": "<CLOUDFLARE_ACCOUNT_ID>",
+  "accountId": "71ae37f53a5609c670ae368438156afa",
 
   // Worker names are permanent service identities. Keep them unique within the account.
   // Reference: docs/customization.md#workers-and-routing
