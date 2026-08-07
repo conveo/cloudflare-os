@@ -65,18 +65,31 @@
     "enabled": true
   },
 
-  // Optional platform-funded model catalog. Left disabled: Conveo routes inference through
-  // agentgateway's /anthropic route instead, which is per-user model configuration rather
-  // than a deployment-wide catalog. See docs/agentgateway.md#models.
+  // Deployment-funded model catalog through Cloudflare AI Gateway.
+  //
+  // Chosen over routing models via agentgateway because that path is per-USER: upstream
+  // reads apiUrl/apiToken from each person's own AiModelConfig, so everyone would paste a
+  // shared gateway key before they could use Studio at all. Gateway mode needs no user
+  // setup. The trade is deliberate and worth restating: the Anthropic key now lives in
+  // Cloudflare AI Gateway (BYOK) rather than behind agentgateway, and AI Gateway sees
+  // prompts and responses — its logging and retention are a separate, dashboard-side
+  // decision. See docs/agentgateway.md#models.
+  //
+  // In this mode upstream IGNORES each user's apiToken and apiUrl entirely, which is what
+  // retires the /anthropic-cloudflare-os route on the agentgateway side.
+  //
+  // Every provider listed here is ADVERTISED to users. anthropic is funded by the stored
+  // BYOK key; openai and google each need their own stored key or unified billing before
+  // their models work, or they fail at first use rather than being hidden.
   // Reference: docs/customization.md#ai-models
   "aiGateway": {
-    "enabled": false,
-    "name": "<AI_GATEWAY_NAME>",
-    "accountId": "<AI_GATEWAY_ACCOUNT_ID>",
+    "enabled": true,
+    "name": "default",
+    "accountId": "71ae37f53a5609c670ae368438156afa",
     "providers": ["anthropic", "openai", "google", "cloudflare"],
 
     // "direct" sends Workers AI to its REST endpoint. "gateway" adds AI Gateway logs.
-    "workersAi": { "mode": "gateway", "gateway": "<WORKERS_AI_GATEWAY_NAME>" }
+    "workersAi": { "mode": "gateway", "gateway": "default" }
   },
 
   "context": {
