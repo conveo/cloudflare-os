@@ -128,19 +128,20 @@ Secrets Manager write, and revoking the whole surface is deleting one Grant.
 
 ### Before enabling it
 
-Two prerequisites, neither of which this repository can satisfy on its own:
+One prerequisite this repository cannot satisfy on its own: **create the key** at
+`<eso.pathPrefix>/cloudflare-os-anthropic-key` in AWS Secrets Manager, materialized into the
+cluster by External Secrets.
 
-1. **Create the key.** `<eso.pathPrefix>/cloudflare-os-anthropic-key` in AWS Secrets Manager,
-   materialized into the cluster by External Secrets.
-2. **Confirm the header.** Cloudflare OS's Anthropic path sends the configured token as
-   `x-api-key` — the Anthropic SDK convention — and nothing in configuration can change that. If
-   agentgateway's `apiKeyAuthentication` reads `Authorization: Bearer` instead, this route
-   answers 401 and the integration needs a small proxy Worker on the Cloudflare side to
-   re-header the request. **Verify with one `curl` against the live gateway before rolling it
-   out to users.**
+The header question this section used to leave open is settled. Cloudflare OS's Anthropic
+transport constructs the Anthropic SDK with `apiKey` set and `authToken` null, so it always
+sends the credential as `x-api-key` and has no configuration seam to send anything else.
+agentgateway's `apiKeyAuthentication` defaults to `Authorization` with the `Bearer ` prefix —
+but the pinned v1.4.1 CRD carries `location.header.name`, so the gate can be told to read
+`x-api-key` instead. agentgateway's `llm.anthropic.cloudflareOs.header` does exactly that.
 
-Until both hold, leave `llm.anthropic.cloudflareOs.enabled` false and let users bring their own
-model credentials.
+Note the CRD validates `exactly one of [header queryParameter cookie expression]`, so the
+location is emitted only when a header is named; leaving it unset keeps the data-plane default
+rather than sending an empty object.
 
 ## What was not integrated, and why
 
