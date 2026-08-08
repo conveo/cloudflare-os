@@ -14,6 +14,7 @@ const generatedPaths = {
   context: join(root, "cloudflare-os/packages/gatekeeper-context", generatedName),
   customGatekeeper: join(root, "packages/custom-gatekeeper", generatedName),
   mcpGatekeeper: join(root, "cloudflare-os/packages/gatekeeper-mcp", generatedName),
+  mcpPortalGatekeeper: join(root, "cloudflare-os/packages/gatekeeper-mcp-portal", generatedName),
   errorReporter: join(root, "packages/error-reporter", generatedName),
 };
 
@@ -24,6 +25,7 @@ const requiredPaths = [
   "workers.context.name",
   "workers.customGatekeeper.name",
   "mcp.enabled",
+  "mcpPortal.enabled",
   "access.issuer",
   "access.audience",
   "access.admins",
@@ -53,6 +55,8 @@ const errorReportingPaths = [
 
 const mcpPaths = ["workers.mcpGatekeeper.name"];
 
+const mcpPortalPaths = ["workers.mcpPortalGatekeeper.name", "mcpPortal.url"];
+
 const resourcePaths = [
   "context.kvNamespaceId",
   "resources.blueprintsKvNamespaceId",
@@ -70,6 +74,7 @@ export function validateConfig(config) {
     ...(config.aiGateway?.enabled ? aiGatewayPaths : []),
     ...(config.errorReporting?.enabled ? errorReportingPaths : []),
     ...(config.mcp?.enabled ? mcpPaths : []),
+    ...(config.mcpPortal?.enabled ? mcpPortalPaths : []),
   ];
   for (const path of activePaths) {
     const value = valueAt(config, path);
@@ -106,6 +111,13 @@ export function validateConfig(config) {
       workers: { ...activeConfig.workers, mcpGatekeeper: undefined },
     };
   }
+  if (!config.mcpPortal.enabled) {
+    activeConfig = {
+      ...activeConfig,
+      workers: { ...activeConfig.workers, mcpPortalGatekeeper: undefined },
+      mcpPortal: { enabled: false },
+    };
+  }
   const placeholder = JSON.stringify(activeConfig).match(/<[^>]+>/)?.[0];
   if (placeholder) throw new Error(`Replace deployment placeholder ${placeholder}.`);
 
@@ -115,6 +127,7 @@ export function validateConfig(config) {
     "aiGateway.providers",
     "errorReporting.enabled",
     "mcp.enabled",
+    "mcpPortal.enabled",
     "observability.enabled",
     "observability.headSamplingRate",
     "observability.logs.invocationLogs",
@@ -134,6 +147,7 @@ export function validateConfig(config) {
   const inactiveWorkers = {
     errorReporter: !config.errorReporting.enabled,
     mcpGatekeeper: !config.mcp.enabled,
+    mcpPortalGatekeeper: !config.mcpPortal.enabled,
   };
   const workerNames = Object.entries(config.workers)
     .filter(([key]) => !inactiveWorkers[key])
@@ -176,6 +190,36 @@ export function validateConfig(config) {
   // workers.dev address is only knowable after the first deploy.
   if (config.mcp.enabled && !route.customDomain) {
     throw new Error("The MCP Gatekeeper requires workers.router.route.customDomain.");
+  }
+
+  if (typeof config.mcpPortal.enabled !== "boolean") {
+    throw new Error("MCP portal enabled must be a boolean.");
+  }
+  if (config.mcpPortal.enabled) {
+    // Same reason as the MCP Gatekeeper: the OAuth redirect_uri is derived from the router
+    // hostname and registered before the Worker is first reached.
+    if (!route.customDomain) {
+      throw new Error("The MCP portal requires workers.router.route.customDomain.");
+    }
+    // The portal URL becomes every user's OAuth destination, so a typo here sends the whole
+    // deployment's sign-in flow at whatever host it names. Refuse anything but a plain HTTPS
+    // URL, and refuse embedded credentials outright (the connector would copy them into
+    // account state). Upstream hides a bad URL rather than failing loudly, so catch it here.
+    let portal;
+    try {
+      portal = new URL(config.mcpPortal.url);
+    } catch {
+      throw new Error("MCP portal url must be an absolute URL.");
+    }
+    if (portal.protocol !== "https:") {
+      throw new Error("MCP portal url must be https.");
+    }
+    if (portal.username || portal.password) {
+      throw new Error("MCP portal url must not embed credentials.");
+    }
+    if (typeof config.mcpPortal.name !== "string" || !config.mcpPortal.name.trim()) {
+      throw new Error("MCP portal name must be a non-empty string.");
+    }
   }
 
   const issuer = new URL(config.access.issuer);
@@ -286,6 +330,9 @@ export function generateConfigs(config, bases) {
   const mcpGatekeeper = config.mcp.enabled
     ? structuredClone(bases.mcpGatekeeper)
     : undefined;
+  const mcpPortalGatekeeper = config.mcpPortal.enabled
+    ? structuredClone(bases.mcpPortalGatekeeper)
+    : undefined;
   const errorReporter = config.errorReporting.enabled
     ? structuredClone(bases.errorReporter)
     : undefined;
@@ -347,6 +394,11 @@ export function generateConfigs(config, bases) {
       service: config.workers.mcpGatekeeper.name,
       entrypoint: "GatekeeperVendor",
     }] : []),
+    ...(config.mcpPortal.enabled ? [{
+      binding: "GATEKEEPER_MCP_PORTAL",
+      service: config.workers.mcpPortalGatekeeper.name,
+      entrypoint: "GatekeeperVendor",
+    }] : []),
   ];
   workshop.kv_namespaces = [
     { binding: "BLUEPRINTS", ...(config.resources.blueprintsKvNamespaceId
@@ -383,6 +435,26 @@ export function generateConfigs(config, bases) {
     };
   }
 
+  if (mcpPortalGatekeeper) {
+    setCommon(mcpPortalGatekeeper, config, config.workers.mcpPortalGatekeeper.name);
+    mcpPortalGatekeeper.vars = {
+      ...mcpPortalGatekeeper.vars,
+      BASE_URL: `https://${config.workers.router.route.customDomain}/gatekeeper/mcp-portal`,
+      MCP_ALLOW_INSECURE: "false",
+      // The one endpoint every user reaches company MCP servers through. Unlike the
+      // user-supplied connector, nobody types this.
+      MCP_PORTAL_URL: config.mcpPortal.url,
+      MCP_PORTAL_NAME: config.mcpPortal.name,
+      // OAuth is upstream's default; stated so the deployment's auth model is explicit
+      // rather than inherited. Changing it is a trust-boundary change.
+      MCP_PORTAL_AUTH: "oauth",
+      // Left off deliberately: the portal fronts servers whose own destructiveHint /
+      // idempotentHint we do not review, and trusting them would let any one upstream
+      // self-declare its writes as auto-approvable.
+      MCP_PORTAL_TRUST_ANNOTATIONS: "false",
+    };
+  }
+
   if (errorReporter) {
     setCommon(errorReporter, config, config.workers.errorReporter.name);
   }
@@ -398,6 +470,12 @@ export function generateConfigs(config, bases) {
       binding: "GATEKEEPER_MCP",
       service: config.workers.mcpGatekeeper.name,
     }] : []),
+    // The binding suffix is what the router turns into a path: GATEKEEPER_MCP_PORTAL ->
+    // /gatekeeper/mcp-portal, which must equal the connector's BASE_URL below.
+    ...(config.mcpPortal.enabled ? [{
+      binding: "GATEKEEPER_MCP_PORTAL",
+      service: config.workers.mcpPortalGatekeeper.name,
+    }] : []),
   ];
   router.assets = {
     directory: "../workshop-frontend/dist",
@@ -411,6 +489,7 @@ export function generateConfigs(config, bases) {
     context,
     customGatekeeper,
     ...(mcpGatekeeper && { mcpGatekeeper }),
+    ...(mcpPortalGatekeeper && { mcpPortalGatekeeper }),
     ...(errorReporter && { errorReporter }),
     // Last: every binding it names must already exist.
     router,
@@ -458,6 +537,9 @@ function build(config) {
   if (config.mcp.enabled) {
     run(["--dir", "cloudflare-os", "--filter", "@gadgets/mcp-gatekeeper", "build"]);
   }
+  if (config.mcpPortal.enabled) {
+    run(["--dir", "cloudflare-os", "--filter", "@gadgets/mcp-portal-gatekeeper", "build"]);
+  }
   if (config.errorReporting.enabled) {
     run(["--dir", "packages/error-reporter", "run", "build"]);
   }
@@ -478,6 +560,8 @@ async function main() {
     context: await readJsonc(join(root, "cloudflare-os/packages/gatekeeper-context/wrangler.jsonc")),
     customGatekeeper: await readJsonc(join(root, "packages/custom-gatekeeper/wrangler.jsonc")),
     mcpGatekeeper: await readJsonc(join(root, "cloudflare-os/packages/gatekeeper-mcp/wrangler.jsonc")),
+    mcpPortalGatekeeper: await readJsonc(
+      join(root, "cloudflare-os/packages/gatekeeper-mcp-portal/wrangler.jsonc")),
     errorReporter: await readJsonc(join(root, "packages/error-reporter/wrangler.jsonc")),
   });
 
@@ -500,6 +584,10 @@ async function main() {
     if (config.mcp.enabled) {
       run(["exec", "wrangler", "deploy", "--config", generatedName, ...deployArgs],
         join(root, "cloudflare-os/packages/gatekeeper-mcp"));
+    }
+    if (config.mcpPortal.enabled) {
+      run(["exec", "wrangler", "deploy", "--config", generatedName, ...deployArgs],
+        join(root, "cloudflare-os/packages/gatekeeper-mcp-portal"));
     }
     run(["exec", "wrangler", "deploy", "--config", generatedName, ...deployArgs],
       join(root, "cloudflare-os/packages/workshop-backend"));

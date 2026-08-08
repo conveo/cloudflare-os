@@ -31,6 +31,7 @@
     "context": { "name": "conveo-studio-context" },
     "customGatekeeper": { "name": "conveo-studio-custom" },
     "mcpGatekeeper": { "name": "conveo-studio-mcp" },
+    "mcpPortalGatekeeper": { "name": "conveo-studio-mcp-portal" },
     "errorReporter": { "name": "conveo-studio-errors" }
   },
 
@@ -63,6 +64,29 @@
   // Reference: docs/agentgateway.md
   "mcp": {
     "enabled": true
+  },
+
+  // MCP portal — the SAME agentgateway aggregate, but administrator-configured.
+  //
+  // The connector above needs each user to paste an endpoint; this one takes one URL set
+  // here, so a user presses connect and goes straight to Okta. Grants also scope to ONE
+  // server behind the portal, so a Gadget granted Linear gets Linear's tools rather than
+  // every tool the aggregate carries.
+  //
+  // It works against agentgateway because the federation already names tools
+  // `<server>_<tool>` (grafana_query_loki_logs, notion_notion-fetch), which is the
+  // convention the connector recovers upstream servers from. `portal_list_servers` is
+  // absent, which only costs display names — tool prefixes are the authority on
+  // membership.
+  //
+  // KNOWN LIMIT: the configurator discovers servers from the catalog, and that catalog is
+  // capped at 96 KiB. Grafana's schemas alone nearly fill it, so only the servers before
+  // the cut are offered. Narrow what `/` serves, or point this at a smaller federation.
+  // Reference: docs/agentgateway.md#mcp-portal
+  "mcpPortal": {
+    "enabled": true,
+    "url": "https://mcp.ops.conveo.ai/",
+    "name": "Conveo (agentgateway)"
   },
 
   // Deployment-funded model catalog through Cloudflare AI Gateway.
