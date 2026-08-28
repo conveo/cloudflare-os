@@ -355,3 +355,56 @@ test("generates binding-only storage for automatic provisioning", async () => {
   assert.deepEqual(generated.workshop.r2_buckets, [{ binding: "BLUEPRINT_CONTENT" }]);
   assert.deepEqual(generated.context.kv_namespaces, [{ binding: "CONTEXT_COLLECTIONS" }]);
 });
+
+// The submodule packages this workspace includes declare their toolchain as `catalog:`, and a
+// catalog is resolved by the workspace that owns the member — so pnpm-workspace.yaml here has to
+// carry a copy of the submodule's entries. A copy drifts: bumping the submodule can move a version
+// underneath it, and the symptoms are either a hard ERR_PNPM_CATALOG_ENTRY_NOT_FOUND on install or,
+// worse, the shared packages silently building against a different compiler here than upstream.
+//
+// Reads only the flat `catalog:` block of each file — two-space `key: value` entries, `#` comments,
+// optional quotes — rather than pulling in a YAML parser for one assertion. Anything it cannot
+// parse fails the test rather than being skipped.
+function readCatalog(text) {
+  const lines = text.split("\n");
+  const start = lines.findIndex((line) => line.trim() === "catalog:");
+  if (start === -1) return null;
+  const entries = {};
+  for (const line of lines.slice(start + 1)) {
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    if (!line.startsWith("  ")) break;             // dedent ends the block
+    const match = line.match(/^ {2}'?([^':]+)'?:\s*(\S+)\s*$/);
+    if (!match) throw new Error(`Unparsed catalog line: ${line}`);
+    entries[match[1]] = match[2];
+  }
+  return entries;
+}
+
+test("keeps the workspace catalog in step with the submodule's", async () => {
+  const read = async (path) => readFile(new URL(path, import.meta.url), "utf8");
+  const ours = readCatalog(await read("../pnpm-workspace.yaml"));
+  const upstream = readCatalog(await read("../cloudflare-os/pnpm-workspace.yaml"));
+  assert.ok(ours, "this workspace must declare a catalog");
+  assert.ok(upstream, "the submodule must declare a catalog");
+
+  // Every entry we mirror must match upstream exactly. Extra entries upstream declares and we
+  // don't are fine — we only need the ones our included packages actually reference.
+  for (const [name, version] of Object.entries(ours)) {
+    assert.equal(version, upstream[name],
+      `catalog "${name}" is ${version} here but ${upstream[name]} upstream; ` +
+      `the submodule bump moved it, so update pnpm-workspace.yaml to match`);
+  }
+
+  // And every `catalog:` spec the included submodule packages declare must be covered, which is
+  // the install-time failure this guard exists to pre-empt.
+  for (const pkg of ["workshop-shared", "error-reporting"]) {
+    const manifest = JSON.parse(await read(`../cloudflare-os/packages/${pkg}/package.json`));
+    for (const section of ["dependencies", "devDependencies", "peerDependencies"]) {
+      for (const [name, spec] of Object.entries(manifest[section] ?? {})) {
+        if (typeof spec === "string" && spec.startsWith("catalog:")) {
+          assert.ok(name in ours, `${pkg} needs catalog entry "${name}", which this workspace omits`);
+        }
+      }
+    }
+  }
+});

@@ -171,7 +171,7 @@ Default recommendations for a first evaluation are AI disabled, new storage, Err
 
 ### 3. Prepare The Workspace
 
-Require Node.js major 24 and pnpm major 11 unless the current repository says otherwise. Confirm account access to every enabled product, including Workers, KV, R2, Browser Rendering, Dynamic Worker Loaders, and optional AI products.
+Require Node.js major 24 and the pnpm version in the root `packageManager` field, which is pinned and tracks upstream. Upstream builds through Vite+ (`vp`); packages that once had a `build` script may not, and `pnpm-workspace.yaml` mirrors the submodule's `catalog:`. Treat a submodule bump as a toolchain change, not only a source change. Confirm account access to every enabled product, including Workers, KV, R2, Browser Rendering, Dynamic Worker Loaders, and optional AI products.
 
 Run the repository's documented setup commands. Stop if installation unexpectedly changes lockfiles, the submodule gitlink, or tracked files. Resolve provenance or version drift; do not normalize it away.
 

@@ -531,24 +531,42 @@ function requireSubmodule() {
   }
 }
 
+// Upstream builds through Vite+ (`vp`) rather than package scripts, so several packages no
+// longer expose a `build` script at all. What each one still needs before `wrangler deploy`
+// is exactly what its own `deploy` script does upstream — mirrored here rather than guessed:
+//
+//   gatekeeper-context     vp build:app          (its Wrangler hook only runs capnweb-validate)
+//   gatekeeper-mcp         vp build:configurator (same)
+//   gatekeeper-mcp-portal  vp build:configurator (same)
+//   workshop-frontend      vp build              (produces the dist the router serves)
+//   workshop-backend       nothing — its Wrangler hook runs `pnpm run build:worker`
+//   router                 nothing — no hook, and it only needs the frontend's dist
+//
+// --no-cache matches upstream's own deploy scripts: a replayed artifact is a poor trade for
+// the minutes it saves on a rare, production-bound run. --fail-if-no-match makes a filter
+// that stops matching a loud failure rather than a silent no-op, which is the failure mode
+// that matters when upstream renames a package during an upgrade.
+function vp(filter, task, env = process.env) {
+  run(["exec", "vp", "run", "--no-cache", "--fail-if-no-match", "-F", filter, task],
+    join(root, "cloudflare-os"), env);
+}
+
 function build(config) {
-  run(["--dir", "cloudflare-os", "--filter", "@gadgets/gatekeeper-context", "build"]);
+  vp("@gadgets/gatekeeper-context", "build:app");
   run(["--dir", "packages/custom-gatekeeper", "run", "build"]);
   if (config.mcp.enabled) {
-    run(["--dir", "cloudflare-os", "--filter", "@gadgets/mcp-gatekeeper", "build"]);
+    vp("@gadgets/mcp-gatekeeper", "build:configurator");
   }
   if (config.mcpPortal.enabled) {
-    run(["--dir", "cloudflare-os", "--filter", "@gadgets/mcp-portal-gatekeeper", "build"]);
+    vp("@gadgets/mcp-portal-gatekeeper", "build:configurator");
   }
   if (config.errorReporting.enabled) {
     run(["--dir", "packages/error-reporter", "run", "build"]);
   }
-  run(["--dir", "cloudflare-os", "--filter", "@gadgets/workshop-frontend", "build"], root, {
-    ...process.env,
-    VITE_CF_ACCESS_MODE: "true",
-  });
-  run(["--dir", "cloudflare-os", "--filter", "@gadgets/workshop-backend", "build"]);
-  run(["--dir", "cloudflare-os", "--filter", "@gadgets/router", "build"]);
+  // The frontend task declares `env: ['VITE_*']`, so this flag is part of vp's cache
+  // fingerprint rather than invisible to it — a bundle built without Access mode can no
+  // longer be replayed into an Access-mode deployment.
+  vp("@gadgets/workshop-frontend", "build", { ...process.env, VITE_CF_ACCESS_MODE: "true" });
 }
 
 async function main() {
