@@ -154,13 +154,14 @@ also lives in each user's model configuration, which does not refresh.
 
 ## What was not integrated, and why
 
-**The aggregate `/` federation as an MCP portal.** Upstream ships a second connector,
-`gatekeeper-mcp-portal`, that takes one administrator-configured URL and needs no user to paste
-an endpoint — a better fit on its face. It requires the Cloudflare MCP portal contract: a
-`portal_list_servers` tool and `{server_id}_{tool}` name prefixes. agentgateway's federation
-implements neither, so the portal connector finds no server to scope a grant to and its form
-stays unsubmittable. Teaching the federation route that contract would make the portal connector
-work and is the natural follow-up if per-user endpoint pasting proves to be friction.
+**The aggregate `/` federation as an MCP portal.** Now integrated — see
+[MCP portal](#mcp-portal). An earlier revision of this document claimed the portal connector
+could not work here because agentgateway implements neither `portal_list_servers` nor
+`{server_id}_{tool}` prefixes. The prefix half was wrong: the federation has always named tools
+`grafana_query_loki_logs`, `notion_notion-fetch` and so on, which is exactly what the connector
+recovers server membership from. `portal_list_servers` is advisory — it supplies display names
+and ordering, while prefixes remain the authority — so its absence costs bare ids, not
+function.
 
 **Per-user model attribution.** See [above](#what-this-costs-honestly).
 

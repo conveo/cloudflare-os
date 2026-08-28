@@ -180,6 +180,16 @@ Prefer wrapper-owned Workers and [service bindings](https://developers.cloudflar
 2. Update the submodule to the intended upstream commit.
 3. Review Workshop and Context Wrangler base-config changes and Gatekeeper contracts.
 4. Run `pnpm install`, `pnpm --dir cloudflare-os install`, and `pnpm check`.
+   Upstream builds through **Vite+ (`vp`)** rather than package scripts, so several packages
+   expose no `build` script — `scripts/deploy.mjs` mirrors what each package's own upstream
+   `deploy` script does instead. If a bump moves that around, the `--fail-if-no-match` on every
+   `vp` invocation turns a filter that stopped matching into a loud failure.
+   Two other things travel with the toolchain and are easy to miss:
+   - `pnpm-workspace.yaml` here carries a **copy** of the submodule's `catalog:` entries,
+     because the two upstream packages this workspace includes declare their toolchain that
+     way. A test compares the two and fails on drift.
+   - This repo's own packages extend the submodule's `tsconfig.json`, so an upstream compiler
+     change reaches them. Keep the root `typescript` version equal to the catalog's.
 5. Deploy and verify Access, administrator access, storage, configured AI, Context, custom observations, and the Error Reporter query surface.
 6. If needed, restore the previous gitlink and redeploy, or use [Workers rollback](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/) when bindings remain compatible.
 

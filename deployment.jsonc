@@ -79,9 +79,12 @@
   // absent, which only costs display names — tool prefixes are the authority on
   // membership.
   //
-  // KNOWN LIMIT: the configurator discovers servers from the catalog, and that catalog is
-  // capped at 96 KiB. Grafana's schemas alone nearly fill it, so only the servers before
-  // the cut are offered. Narrow what `/` serves, or point this at a smaller federation.
+  // Server discovery no longer reads the whole catalog: it falls back to a NAME-ONLY index
+  // (upstream #170), so ~137 tool names cost ~4 KB against the 96 KiB budget instead of
+  // exhausting it, and every server is offered rather than the first two. Per-server scans
+  // filter before applying budgets, so a verbose server can no longer crowd out the one you
+  // picked. A survey that does get truncated blocks the form instead of showing a partial
+  // list as complete.
   // Reference: docs/agentgateway.md#mcp-portal
   "mcpPortal": {
     "enabled": true,
