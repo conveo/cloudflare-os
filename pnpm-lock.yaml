@@ -48,7 +48,7 @@ importers:
   cloudflare-os/packages/workshop-shared:
     dependencies:
       '@cloudflare/workers-types':
-        specifier: ^5.20260808.1
+        specifier: ^5.20260825.1
         version: 5.20260827.1
       '@codemirror/state':
         specifier: ^6.7.1
