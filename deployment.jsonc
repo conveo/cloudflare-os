@@ -1,46 +1,122 @@
 {
   // Cloudflare account that owns every Worker and provisioned resource.
+  // Conveo's Cloudflare account — the one holding the conveo.ai zone that
+  // gitops/terraform/hub already manages (cloudflare-cache.tf).
   // Find it: https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/
-  "accountId": "<CLOUDFLARE_ACCOUNT_ID>",
+  "accountId": "71ae37f53a5609c670ae368438156afa",
 
   // Worker names are permanent service identities. Keep them unique within the account.
   // Reference: docs/customization.md#workers-and-routing
+  //
+  // This deployment uses upstream's `router` topology: the router owns the public
+  // origin and every other Worker is private, reachable only over a service binding.
+  // That is what makes OAuth-capable Gatekeepers (mcpGatekeeper below) possible on a
+  // single hostname — their browser callbacks land on /gatekeeper/<name>/oauth.
   "workers": {
-    "workshop": {
-      "name": "<WORKSHOP_WORKER_NAME>",
+    // The only Worker with a public route. Serves the frontend, forwards /api/* to the
+    // Workshop and /gatekeeper/<name>/* to each bound Gatekeeper.
+    "router": {
+      "name": "conveo-studio",
 
-      // Production: use a hostname in an active Cloudflare zone. Wrangler creates DNS and TLS.
-      // Evaluation: replace this with "route": { "workersDev": true }.
+      // Production: a hostname in the conveo.ai Cloudflare zone. Wrangler creates DNS and TLS.
+      // Evaluation: replace with "route": { "workersDev": true } — but note that mcp.enabled
+      // requires a customDomain, since the MCP Gatekeeper's OAuth callback URL must be known
+      // before the Worker exists.
       // https://developers.cloudflare.com/workers/configuration/routing/custom-domains/
-      "route": { "customDomain": "os.example.com" }
+      "route": { "customDomain": "studio.conveo.ai" }
     },
-    "context": { "name": "<CONTEXT_WORKER_NAME>" },
-    "customGatekeeper": { "name": "<CUSTOM_GATEKEEPER_WORKER_NAME>" },
-    "errorReporter": { "name": "<ERROR_REPORTER_WORKER_NAME>" }
+
+    // Private behind the router.
+    "workshop": { "name": "conveo-studio-workshop" },
+    "context": { "name": "conveo-studio-context" },
+    "customGatekeeper": { "name": "conveo-studio-custom" },
+    "mcpGatekeeper": { "name": "conveo-studio-mcp" },
+    "mcpPortalGatekeeper": { "name": "conveo-studio-mcp-portal" },
+    "errorReporter": { "name": "conveo-studio-errors" }
   },
 
   // This starter deploys Cloudflare Access mode. Cloudflare OS also supports built-in password
   // accounts and auth Gatekeeper sign-in; see the reference below before switching. The audience
-  // comes from the self-hosted Access application protecting the Workshop hostname.
+  // comes from the self-hosted Access application protecting the router hostname.
   // "admins" gates /admin in every sign-in method.
+  //
+  // The Access application for studio.conveo.ai is created BY HAND in the Cloudflare Zero
+  // Trust dashboard — nothing here creates it, and `wrangler deploy` has no `access` command.
+  // Without it the Workshop refuses every /api call (no signed Access JWT arrives) while the
+  // router still serves the frontend to anyone. Paste its AUD tag below.
   // Reference: docs/customization.md#sign-in-methods
   "access": {
-    "issuer": "https://<TEAM_NAME>.cloudflareaccess.com",
-    "audience": "<ACCESS_AUDIENCE>",
-    "admins": ["<ADMIN_EMAIL>"]
+    "issuer": "https://conveo.cloudflareaccess.com",
+    "audience": "988eba4650d753286f1d0c5a081f98e383c9c2edc4be40eded13f9d20b2556ae",
+    "admins": ["ludovic@conveo.ai"]
   },
 
-  // Optional platform-funded model catalog. Leave disabled to deploy without AI setup.
-  // When enabled, replace every placeholder and install CF_AI_GATEWAY_API_TOKEN separately.
+  // MCP Gatekeeper — the agentgateway integration. Deploys upstream's generic MCP connector,
+  // so a user can connect any MCP endpoint agentgateway fronts
+  // (https://mcp.ops.conveo.ai/<service>) with their OWN identity: the connector runs the
+  // OAuth discovery + dynamic client registration chain against the endpoint, Keycloak signs
+  // the user in through Okta, and agentgateway brokers that user's real vendor token per call.
+  //
+  // Requires workers.router.route.customDomain: the connector's OAuth redirect_uri is
+  // https://<customDomain>/gatekeeper/mcp/oauth, which must be registered before first use.
+  // That host must also appear in agentgateway's
+  // keycloak.pruneDynamicClients.repairHosts, or the registered client is pruned.
+  // Reference: docs/agentgateway.md
+  "mcp": {
+    "enabled": true
+  },
+
+  // MCP portal — the SAME agentgateway aggregate, but administrator-configured.
+  //
+  // The connector above needs each user to paste an endpoint; this one takes one URL set
+  // here, so a user presses connect and goes straight to Okta. Grants also scope to ONE
+  // server behind the portal, so a Gadget granted Linear gets Linear's tools rather than
+  // every tool the aggregate carries.
+  //
+  // It works against agentgateway because the federation already names tools
+  // `<server>_<tool>` (grafana_query_loki_logs, notion_notion-fetch), which is the
+  // convention the connector recovers upstream servers from. `portal_list_servers` is
+  // absent, which only costs display names — tool prefixes are the authority on
+  // membership.
+  //
+  // Server discovery no longer reads the whole catalog: it falls back to a NAME-ONLY index
+  // (upstream #170), so ~137 tool names cost ~4 KB against the 96 KiB budget instead of
+  // exhausting it, and every server is offered rather than the first two. Per-server scans
+  // filter before applying budgets, so a verbose server can no longer crowd out the one you
+  // picked. A survey that does get truncated blocks the form instead of showing a partial
+  // list as complete.
+  // Reference: docs/agentgateway.md#mcp-portal
+  "mcpPortal": {
+    "enabled": true,
+    "url": "https://mcp.ops.conveo.ai/",
+    "name": "Conveo (agentgateway)"
+  },
+
+  // Deployment-funded model catalog through Cloudflare AI Gateway.
+  //
+  // Chosen over routing models via agentgateway because that path is per-USER: upstream
+  // reads apiUrl/apiToken from each person's own AiModelConfig, so everyone would paste a
+  // shared gateway key before they could use Studio at all. Gateway mode needs no user
+  // setup. The trade is deliberate and worth restating: the Anthropic key now lives in
+  // Cloudflare AI Gateway (BYOK) rather than behind agentgateway, and AI Gateway sees
+  // prompts and responses — its logging and retention are a separate, dashboard-side
+  // decision. See docs/agentgateway.md#models.
+  //
+  // In this mode upstream IGNORES each user's apiToken and apiUrl entirely, which is what
+  // retires the /anthropic-cloudflare-os route on the agentgateway side.
+  //
+  // Every provider listed here is ADVERTISED to users. anthropic is funded by the stored
+  // BYOK key; openai and google each need their own stored key or unified billing before
+  // their models work, or they fail at first use rather than being hidden.
   // Reference: docs/customization.md#ai-models
   "aiGateway": {
-    "enabled": false,
-    "name": "<AI_GATEWAY_NAME>",
-    "accountId": "<AI_GATEWAY_ACCOUNT_ID>",
+    "enabled": true,
+    "name": "cloudflareos-ai",
+    "accountId": "71ae37f53a5609c670ae368438156afa",
     "providers": ["anthropic", "openai", "google", "cloudflare"],
 
     // "direct" sends Workers AI to its REST endpoint. "gateway" adds AI Gateway logs.
-    "workersAi": { "mode": "gateway", "gateway": "<WORKERS_AI_GATEWAY_NAME>" }
+    "workersAi": { "mode": "gateway", "gateway": "cloudflareos-ai" }
   },
 
   "context": {
@@ -53,10 +129,11 @@
   },
 
   // Displayed to agents when the example custom integration is enabled in /admin.
-  // Reference: docs/customization.md#custom-gatekeepers
+  // Still the upstream read-only example, rebranded — review its authority before enabling it
+  // for anyone. Reference: docs/customization.md#custom-gatekeepers
   "customGatekeeper": {
-    "name": "<ORGANIZATION_DISPLAY_NAME>",
-    "message": "<ORGANIZATION_GUIDANCE>"
+    "name": "Conveo",
+    "message": "Conveo runs on AWS EKS (conveo-mgmt hub, conveo-dev / conveo-eu-prod / conveo-us-prod spokes), delivered by ArgoCD from the conveo/conveo gitops directory. Company tools reach agents through agentgateway at mcp.ops.conveo.ai."
   },
 
   // Explicit backend issue reports go to a private Worker that emits structured console errors.

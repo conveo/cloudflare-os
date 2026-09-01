@@ -7,11 +7,16 @@ import { generateConfigs, validateConfig } from "./deploy.mjs";
 const validConfig = {
   accountId: "0123456789abcdef0123456789abcdef",
   workers: {
-    workshop: { name: "acme-cloudflare-os", route: { customDomain: "os.example.com" } },
+    router: { name: "acme-cloudflare-os", route: { customDomain: "os.example.com" } },
+    workshop: { name: "acme-cloudflare-os-workshop" },
     context: { name: "acme-cloudflare-os-context" },
     customGatekeeper: { name: "acme-cloudflare-os-custom" },
+    mcpGatekeeper: { name: "acme-cloudflare-os-mcp" },
+    mcpPortalGatekeeper: { name: "acme-cloudflare-os-mcp-portal" },
     errorReporter: { name: "acme-cloudflare-os-errors" },
   },
+  mcp: { enabled: true },
+  mcpPortal: { enabled: true, url: "https://mcp.example.com/", name: "Acme portal" },
   access: {
     issuer: "https://acme.cloudflareaccess.com",
     audience: "access-audience",
@@ -42,9 +47,13 @@ const validConfig = {
 
 async function baseConfigs() {
   return {
+    router: await baseConfig("../cloudflare-os/packages/router/wrangler.jsonc"),
     workshop: await baseConfig("../cloudflare-os/packages/workshop-backend/wrangler.jsonc"),
     context: await baseConfig("../cloudflare-os/packages/gatekeeper-context/wrangler.jsonc"),
     customGatekeeper: await baseConfig("../packages/custom-gatekeeper/wrangler.jsonc"),
+    mcpGatekeeper: await baseConfig("../cloudflare-os/packages/gatekeeper-mcp/wrangler.jsonc"),
+    mcpPortalGatekeeper: await baseConfig(
+      "../cloudflare-os/packages/gatekeeper-mcp-portal/wrangler.jsonc"),
     errorReporter: {
       name: "error-reporter",
       observability: { enabled: true, logs: { invocation_logs: false } },
@@ -72,8 +81,16 @@ test("rejects destructive or malformed deployment values", () => {
   assert.throws(() => validateConfig(stringBoolean), /boolean/i);
 
   const invalidDomain = structuredClone(validConfig);
-  invalidDomain.workers.workshop.route.customDomain = "os.example.com/path";
+  invalidDomain.workers.router.route.customDomain = "os.example.com/path";
   assert.throws(() => validateConfig(invalidDomain), /hostname/i);
+
+  const routedWorkshop = structuredClone(validConfig);
+  routedWorkshop.workers.workshop.route = { customDomain: "direct.example.com" };
+  assert.throws(() => validateConfig(routedWorkshop), /only the router may have a route/i);
+
+  const mcpOnWorkersDev = structuredClone(validConfig);
+  mcpOnWorkersDev.workers.router.route = { workersDev: true };
+  assert.throws(() => validateConfig(mcpOnWorkersDev), /customDomain/i);
 
   const numericGateway = structuredClone(validConfig);
   numericGateway.aiGateway.workersAi.gateway = 42;
@@ -103,10 +120,9 @@ test("rejects destructive or malformed deployment values", () => {
 test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", async () => {
   const generated = generateConfigs(validConfig, await baseConfigs());
 
-  assert.equal(generated.workshop.name, "acme-cloudflare-os");
-  assert.deepEqual(generated.workshop.routes, [
-    { pattern: "os.example.com", custom_domain: true },
-  ]);
+  assert.equal(generated.workshop.name, "acme-cloudflare-os-workshop");
+  assert.equal(generated.workshop.routes, undefined);
+  assert.equal(generated.workshop.workers_dev, false);
   assert.deepEqual(generated.workshop.vars.ADMINS, ["admin@example.com"]);
   assert.equal(generated.workshop.vars.CF_ACCESS_ISS, validConfig.access.issuer);
   assert.equal(generated.workshop.vars.CF_ACCESS_AUD, validConfig.access.audience);
@@ -119,7 +135,11 @@ test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", a
       binding: "ERROR_REPORTER",
       service: "acme-cloudflare-os-errors",
       entrypoint: "ErrorReporter",
-      props: { service: "acme-cloudflare-os", environment: "production", release: "abc123" },
+      props: {
+        service: "acme-cloudflare-os-workshop",
+        environment: "production",
+        release: "abc123",
+      },
     },
     {
       binding: "GATEKEEPER_CONTEXT",
@@ -132,12 +152,18 @@ test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", a
       service: "acme-cloudflare-os-custom",
       entrypoint: "GatekeeperVendor",
     },
+    {
+      binding: "GATEKEEPER_MCP",
+      service: "acme-cloudflare-os-mcp",
+      entrypoint: "GatekeeperVendor",
+    },
+    {
+      binding: "GATEKEEPER_MCP_PORTAL",
+      service: "acme-cloudflare-os-mcp-portal",
+      entrypoint: "GatekeeperVendor",
+    },
   ]);
-  assert.deepEqual(generated.workshop.assets, {
-    directory: "../workshop-frontend/dist",
-    not_found_handling: "single-page-application",
-      run_worker_first: ["/api", "/api/*", "/blueprint-screenshot/*"],
-  });
+  assert.equal(generated.workshop.assets, undefined);
   assert.deepEqual(generated.workshop.kv_namespaces, [
     { binding: "BLUEPRINTS", id: "blueprints-kv-id" },
     { binding: "AVATARS", id: "avatars-kv-id" },
@@ -161,6 +187,110 @@ test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", a
   assert.equal(generated.workshop.services.some(
     (service) => service.binding === "FRONTEND_ERROR_REPORTER"), false);
   assert.equal(generated.workshop.ratelimits, undefined);
+});
+
+test("gives the router the only public route and the frontend assets", async () => {
+  const generated = generateConfigs(validConfig, await baseConfigs());
+
+  assert.equal(generated.router.name, "acme-cloudflare-os");
+  assert.deepEqual(generated.router.routes, [
+    { pattern: "os.example.com", custom_domain: true },
+  ]);
+  assert.deepEqual(generated.router.services, [
+    { binding: "WORKSHOP_BACKEND", service: "acme-cloudflare-os-workshop" },
+    { binding: "GATEKEEPER_MCP", service: "acme-cloudflare-os-mcp" },
+    { binding: "GATEKEEPER_MCP_PORTAL", service: "acme-cloudflare-os-mcp-portal" },
+  ]);
+  assert.deepEqual(generated.router.assets, {
+    directory: "../workshop-frontend/dist",
+    binding: "ASSETS",
+    not_found_handling: "single-page-application",
+    run_worker_first: [
+      "/api",
+      "/api/*",
+      "/blueprint-screenshot",
+      "/blueprint-screenshot/*",
+      "/gatekeeper/*",
+    ],
+  });
+
+  // The router binds every other Worker, so it has to be deployed after all of them.
+  assert.equal(Object.keys(generated).at(-1), "router");
+});
+
+test("points the MCP Gatekeeper's OAuth callback at the router", async () => {
+  const generated = generateConfigs(validConfig, await baseConfigs());
+
+  assert.equal(generated.mcpGatekeeper.name, "acme-cloudflare-os-mcp");
+  assert.equal(generated.mcpGatekeeper.vars.BASE_URL,
+    "https://os.example.com/gatekeeper/mcp");
+  assert.equal(generated.mcpGatekeeper.vars.MCP_ALLOW_INSECURE, "false");
+  assert.equal(generated.mcpGatekeeper.routes, undefined);
+});
+
+test("omits the MCP Gatekeeper when it is disabled", async () => {
+  const config = structuredClone(validConfig);
+  config.mcp = { enabled: false };
+  config.workers.mcpGatekeeper = { name: "<UNUSED_MCP_WORKER_NAME>" };
+
+  const generated = generateConfigs(config, await baseConfigs());
+
+  assert.equal(generated.mcpGatekeeper, undefined);
+  assert.equal(generated.workshop.services.some(
+    (service) => service.binding === "GATEKEEPER_MCP"), false);
+  assert.equal(generated.router.services.some(
+    (service) => service.binding === "GATEKEEPER_MCP"), false);
+});
+
+test("configures the MCP portal from deployment settings", async () => {
+  const generated = generateConfigs(validConfig, await baseConfigs());
+  const vars = generated.mcpPortalGatekeeper.vars;
+
+  assert.equal(generated.mcpPortalGatekeeper.name, "acme-cloudflare-os-mcp-portal");
+  assert.equal(vars.MCP_PORTAL_URL, "https://mcp.example.com/");
+  assert.equal(vars.MCP_PORTAL_NAME, "Acme portal");
+  assert.equal(vars.MCP_PORTAL_AUTH, "oauth");
+  // An aggregator's upstreams write their own tool hints; trusting them would let any one
+  // of them self-declare its writes as auto-approvable.
+  assert.equal(vars.MCP_PORTAL_TRUST_ANNOTATIONS, "false");
+  assert.equal(vars.MCP_ALLOW_INSECURE, "false");
+  // The router derives /gatekeeper/mcp-portal from the GATEKEEPER_MCP_PORTAL binding, so a
+  // BASE_URL that disagrees would 404 the OAuth callback.
+  assert.equal(vars.BASE_URL, "https://os.example.com/gatekeeper/mcp-portal");
+  assert.equal(generated.mcpPortalGatekeeper.routes, undefined);
+});
+
+test("rejects an unusable MCP portal URL", () => {
+  const insecure = structuredClone(validConfig);
+  insecure.mcpPortal.url = "http://mcp.example.com/";
+  assert.throws(() => validateConfig(insecure), /https/i);
+
+  const credentials = structuredClone(validConfig);
+  credentials.mcpPortal.url = "https://user:pass@mcp.example.com/";
+  assert.throws(() => validateConfig(credentials), /credentials/i);
+
+  const notAUrl = structuredClone(validConfig);
+  notAUrl.mcpPortal.url = "mcp.example.com";
+  assert.throws(() => validateConfig(notAUrl), /absolute URL/i);
+
+  const onWorkersDev = structuredClone(validConfig);
+  onWorkersDev.workers.router.route = { workersDev: true };
+  onWorkersDev.mcp.enabled = false;
+  assert.throws(() => validateConfig(onWorkersDev), /customDomain/i);
+});
+
+test("omits the MCP portal when it is disabled", async () => {
+  const config = structuredClone(validConfig);
+  config.mcpPortal = { enabled: false, url: "<UNUSED_URL>", name: "<UNUSED_NAME>" };
+  config.workers.mcpPortalGatekeeper = { name: "<UNUSED_WORKER_NAME>" };
+
+  const generated = generateConfigs(config, await baseConfigs());
+
+  assert.equal(generated.mcpPortalGatekeeper, undefined);
+  assert.equal(generated.workshop.services.some(
+    (service) => service.binding === "GATEKEEPER_MCP_PORTAL"), false);
+  assert.equal(generated.router.services.some(
+    (service) => service.binding === "GATEKEEPER_MCP_PORTAL"), false);
 });
 
 test("omits disabled backend error reporting", async () => {
@@ -224,4 +354,57 @@ test("generates binding-only storage for automatic provisioning", async () => {
   ]);
   assert.deepEqual(generated.workshop.r2_buckets, [{ binding: "BLUEPRINT_CONTENT" }]);
   assert.deepEqual(generated.context.kv_namespaces, [{ binding: "CONTEXT_COLLECTIONS" }]);
+});
+
+// The submodule packages this workspace includes declare their toolchain as `catalog:`, and a
+// catalog is resolved by the workspace that owns the member — so pnpm-workspace.yaml here has to
+// carry a copy of the submodule's entries. A copy drifts: bumping the submodule can move a version
+// underneath it, and the symptoms are either a hard ERR_PNPM_CATALOG_ENTRY_NOT_FOUND on install or,
+// worse, the shared packages silently building against a different compiler here than upstream.
+//
+// Reads only the flat `catalog:` block of each file — two-space `key: value` entries, `#` comments,
+// optional quotes — rather than pulling in a YAML parser for one assertion. Anything it cannot
+// parse fails the test rather than being skipped.
+function readCatalog(text) {
+  const lines = text.split("\n");
+  const start = lines.findIndex((line) => line.trim() === "catalog:");
+  if (start === -1) return null;
+  const entries = {};
+  for (const line of lines.slice(start + 1)) {
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    if (!line.startsWith("  ")) break;             // dedent ends the block
+    const match = line.match(/^ {2}'?([^':]+)'?:\s*(\S+)\s*$/);
+    if (!match) throw new Error(`Unparsed catalog line: ${line}`);
+    entries[match[1]] = match[2];
+  }
+  return entries;
+}
+
+test("keeps the workspace catalog in step with the submodule's", async () => {
+  const read = async (path) => readFile(new URL(path, import.meta.url), "utf8");
+  const ours = readCatalog(await read("../pnpm-workspace.yaml"));
+  const upstream = readCatalog(await read("../cloudflare-os/pnpm-workspace.yaml"));
+  assert.ok(ours, "this workspace must declare a catalog");
+  assert.ok(upstream, "the submodule must declare a catalog");
+
+  // Every entry we mirror must match upstream exactly. Extra entries upstream declares and we
+  // don't are fine — we only need the ones our included packages actually reference.
+  for (const [name, version] of Object.entries(ours)) {
+    assert.equal(version, upstream[name],
+      `catalog "${name}" is ${version} here but ${upstream[name]} upstream; ` +
+      `the submodule bump moved it, so update pnpm-workspace.yaml to match`);
+  }
+
+  // And every `catalog:` spec the included submodule packages declare must be covered, which is
+  // the install-time failure this guard exists to pre-empt.
+  for (const pkg of ["workshop-shared", "error-reporting"]) {
+    const manifest = JSON.parse(await read(`../cloudflare-os/packages/${pkg}/package.json`));
+    for (const section of ["dependencies", "devDependencies", "peerDependencies"]) {
+      for (const [name, spec] of Object.entries(manifest[section] ?? {})) {
+        if (typeof spec === "string" && spec.startsWith("catalog:")) {
+          assert.ok(name in ours, `${pkg} needs catalog entry "${name}", which this workspace omits`);
+        }
+      }
+    }
+  }
 });

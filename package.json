@@ -2,7 +2,7 @@
   "name": "cloudflare-os-starter",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@11.9.0",
+  "packageManager": "pnpm@11.17.0",
   "scripts": {
     "test": "node --test scripts/*.test.mjs && pnpm --filter custom-gatekeeper test && pnpm --filter error-reporter test",
     "check": "node scripts/deploy.mjs --check",
@@ -11,7 +11,7 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.20.1",
     "jsonc-parser": "^3.3.1",
-    "typescript": "^5.9.3",
+    "typescript": "7.0.2",
     "vitest": "^4.1.10",
     "wrangler": "^4.115.0"
   }

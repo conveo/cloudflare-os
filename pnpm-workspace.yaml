@@ -3,6 +3,20 @@ packages:
   - cloudflare-os/packages/error-reporting
   - packages/*
 
+# Mirrors the entries of the submodule's own catalog that the two upstream packages above
+# declare as `catalog:`. They are workspace members here (our packages depend on them with
+# `workspace:*`), and a catalog is resolved by the workspace that owns the member — so
+# without these, `pnpm install` fails with ERR_PNPM_CATALOG_ENTRY_NOT_FOUND.
+#
+# This is a copy, so it can drift from upstream on a submodule bump. `scripts/deploy.test.mjs`
+# compares the two and fails when they disagree; keep the versions identical rather than
+# merely compatible, so the shared packages build here exactly as they do upstream.
+catalog:
+  capnweb: ^0.12.0
+  capnweb-validate: 0.3.0
+  typescript: 7.0.2
+  vitest: ^4.1.10
+
 allowBuilds:
   esbuild: true
   sharp: true

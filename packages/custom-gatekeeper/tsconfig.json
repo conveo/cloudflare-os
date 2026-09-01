@@ -7,6 +7,8 @@
     "moduleResolution": "bundler",
     "types": ["./worker-configuration.d.ts"],
     "outDir": "./dist",
+    // TypeScript 7 requires this explicitly once a build emits (TS5011).
+    "rootDir": "./src",
     "declaration": true,
     "sourceMap": true,
     "noEmit": false

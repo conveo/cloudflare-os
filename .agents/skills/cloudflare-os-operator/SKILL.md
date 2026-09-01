@@ -18,6 +18,7 @@ Find the repository root containing all of these markers:
 - `scripts/deploy.mjs`
 - `cloudflare-os/`
 - `packages/custom-gatekeeper/`
+- `docs/agentgateway.md` (this deployment's agentgateway integration)
 
 Do not assume the current working directory or this skill's directory is the starter root. If the markers are absent, stop and ask for the starter checkout. Do not apply this workflow directly to a standalone Cloudflare OS checkout.
 
@@ -159,7 +160,7 @@ Ask once for any decisions not established by existing approved configuration:
 
 1. Evaluation or production, target account, exact hostname, and zone for a custom domain.
 2. Access application, intended users, identity provider requirements, administrators, and denied test identity.
-3. Stable names for Workshop, Context, Custom Gatekeeper, and Error Reporter.
+3. Stable names for the router, Workshop, Context, Custom Gatekeeper, MCP Gatekeeper, and Error Reporter.
 4. New auto-provisioned or existing resource for each of Context KV, Blueprints KV, Avatars KV, and Blueprint Content R2.
 5. AI disabled, Workers AI direct, or AI Gateway; providers, billing, budget, prompt/response logging, and retention.
 6. Error Reporter enabled state, environment/release metadata, telemetry sampling, and retention/export policy.
@@ -170,7 +171,7 @@ Default recommendations for a first evaluation are AI disabled, new storage, Err
 
 ### 3. Prepare The Workspace
 
-Require Node.js major 24 and pnpm major 11 unless the current repository says otherwise. Confirm account access to every enabled product, including Workers, KV, R2, Browser Rendering, Dynamic Worker Loaders, and optional AI products.
+Require Node.js major 24 and the pnpm version in the root `packageManager` field, which is pinned and tracks upstream. Upstream builds through Vite+ (`vp`); packages that once had a `build` script may not, and `pnpm-workspace.yaml` mirrors the submodule's `catalog:`. Treat a submodule bump as a toolchain change, not only a source change. Confirm account access to every enabled product, including Workers, KV, R2, Browser Rendering, Dynamic Worker Loaders, and optional AI products.
 
 Run the repository's documented setup commands. Stop if installation unexpectedly changes lockfiles, the submodule gitlink, or tracked files. Resolve provenance or version drift; do not normalize it away.
 
@@ -184,8 +185,8 @@ For production:
 
 1. Confirm the hostname belongs to an active zone in the target account.
 2. Stop on an existing DNS record, Worker route, custom domain, or Access application collision. Never delete a conflicting record automatically.
-3. Create or identify a self-hosted Access application covering the exact hostname.
-4. Use a narrow policy for intended identities. Broad `Everyone`, `Bypass`, or weak bootstrap policies require an explicit risk acceptance.
+3. Create or identify a self-hosted Access application covering the exact hostname. Nothing in this repository creates or reconciles it — it is dashboard-managed, so it can drift from `deployment.jsonc` silently. Read it from the dashboard rather than trusting the config, and confirm its hostname matches the router's `customDomain` exactly; a mismatch does not error, it leaves the router unauthenticated.
+4. Use a narrow policy for intended identities. Broad `Everyone`, `Bypass`, or weak bootstrap policies require an explicit risk acceptance. `allow_conveo_domain` is the widen-to-the-company switch and is a trust-boundary change.
 5. Copy the exact HTTPS team-origin issuer and exact application audience tag.
 6. Make administrators an explicit subset of users allowed by Access.
 
@@ -203,7 +204,8 @@ Edit only the annotated, non-secret control surface unless the requested feature
 
 - Account IDs are exact 32-character hexadecimal IDs.
 - Active Worker names are unique, stable, lowercase account-level service identities.
-- Set exactly one Workshop route: `customDomain` or `workersDev: true`.
+- Set exactly one router route: `customDomain` or `workersDev: true`. No other Worker may carry a route; the deploy script refuses one, because a second public route is a way around Access.
+- `mcp.enabled` requires `customDomain`: the MCP Gatekeeper's OAuth `redirect_uri` is derived from it and registered with Keycloak before the Worker is first reached.
 - The Access issuer is an HTTPS origin without a path; the audience is exact and unpadded.
 - Administrator emails must match the verified identity representation expected by the current backend.
 - Keep `context.sharingDomain` stable unless intentionally creating a new data-isolation boundary.
@@ -249,6 +251,15 @@ Keep the Custom Gatekeeper disabled in `/admin` until its provenance and authori
 
 Never enable it for everyone merely to complete a smoke test. If an approved smoke test is needed, use the least-authoritative policy and disable it again unless continued access was approved.
 
+### The MCP Gatekeeper
+
+`mcp.enabled` deploys upstream's generic MCP connector. Read [`docs/agentgateway.md`](../../../docs/agentgateway.md) before changing its policy. Two properties decide the review:
+
+- **It accepts any public MCP endpoint, not only agentgateway.** Its boundary is SSRF-shaped (`global_fetch_strictly_public` plus a private-address blocklist), not an allowlist of approved hosts. The only deployment-level control is the connector's `/admin` policy — disabled, optional, or enabled. Conveo brokers tool access through agentgateway precisely so it is not connected ad hoc, so treat that policy as a deliberate decision and not a default to inherit.
+- **Each connection carries the connecting user's own identity.** Through agentgateway the upstream sees that person and applies their vendor RBAC, so a grant's blast radius is one user's real access to that system. That is a feature, but it means a Gadget granted a connected session acts with that user's authority.
+
+Changing the endpoint on an account is a repoint that fails existing bindings closed and requires reconnection. Its OAuth callback host must be trusted in agentgateway's `keycloak.pruneDynamicClients.repairHosts`; changing the router hostname invalidates that and is a trust-boundary change on both sides.
+
 ### 8. Configure Observability And Error Reporting
 
 Keep the Error Reporter private with no route. It receives only explicit upstream `reportIssue()` events; it does not catch every exception or `console.error`, cover every Worker automatically, or provide alerting.
@@ -276,7 +287,9 @@ Before requesting approval, inventory current deployed version IDs for all affec
 1. Error Reporter, when enabled.
 2. Context.
 3. Custom Gatekeeper.
-4. Workshop.
+4. MCP Gatekeeper, when enabled.
+5. Workshop.
+6. Router — last, because it binds every Worker above and is the only public route.
 
 If current `scripts/deploy.mjs` differs, use its order. Breaking cross-Worker contracts need parallel identities and a controlled binding switch, not an in-place sequential deploy.
 
@@ -296,12 +309,12 @@ Success requires evidence for every applicable item:
 - Access redirects/denies unauthenticated users, allows the intended identity, and denies the negative test identity.
 - `/admin` allows an administrator and denies an authenticated non-administrator.
 - Signup, connector, Context, and Gatekeeper policies match the approved decisions.
-- Context, Custom Gatekeeper, and Error Reporter have no unintended public routes.
+- Workshop, Context, Custom Gatekeeper, MCP Gatekeeper, and Error Reporter have no public routes at all. Only the router does.
 - Existing data remains visible; newly created data persists across a safe reload or redeploy test.
 - Each Workshop service binding targets the intended service, entrypoint, and props.
 - The Custom Gatekeeper is disabled or behaves according to its reviewed policy; approved reads appear as observations.
 - AI is intentionally disabled or one approved low-cost request proves the runtime path, with separate evidence for token scope, billing ownership, provider/Gateway selection, prompt collection, retention, and log access.
-- Workshop, Context, Custom Gatekeeper, and Reporter logs are available with the expected sampling.
+- Router, Workshop, Context, Gatekeeper, and Reporter logs are available with the expected sampling.
 - The Reporter query surface exists; absence of events is not a failure without an explicit capture.
 - No secrets or generated Wrangler files are tracked.
 - Last-known-good deployment IDs and recovery instructions are recorded.

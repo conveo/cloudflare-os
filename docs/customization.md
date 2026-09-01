@@ -27,7 +27,8 @@ The custom logo appears in the app chrome, sign-in screens, and browser tab on e
 | --- | --- | --- |
 | `accountId` | Resource ownership | A 32-character [Cloudflare account ID](https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/) |
 | `workers.*.name` | Stable Worker service identities | Unique lowercase names; changing one creates a differently named Worker |
-| `workers.workshop.route` | Public Workshop address | `customDomain` for production or `workersDev: true` for evaluation |
+| `workers.router.route` | The deployment's only public address | `customDomain` for production or `workersDev: true` for evaluation. No other Worker may carry a route — one would be a way around Access |
+| `mcp.enabled` | The [agentgateway MCP connector](agentgateway.md) | `true` deploys and binds it; requires `customDomain` |
 | `access` | Cloudflare Access trust and administrator list | Access team issuer, application audience, and verified email list |
 | `aiGateway` | Deployment-funded model catalog | Disabled, Workers AI direct, or provider traffic through AI Gateway |
 | `context` | Context sharing boundary and snapshot KV | A stable domain label; automatic or existing KV |
@@ -40,9 +41,11 @@ Secrets are never valid values in this file. Install them interactively with Wra
 
 ### Workers and routing
 
-Keep the four Worker names unique. Service bindings use these names, so update and deploy them together.
+Six Workers, and only the `router` is public. It serves the frontend, forwards `/api/*` to the Workshop, and forwards `/gatekeeper/<name>/*` to each bound Gatekeeper — which is how a Gatekeeper's OAuth callback gets a public URL without its own hostname. Everything else is reachable only over a service binding.
 
-For production, set a [Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/):
+Keep the Worker names unique. Service bindings use these names, so update and deploy them together. The deploy order follows the binding graph: every private Worker first, the router last.
+
+For production, set a [Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) on the router:
 
 ```jsonc
 "route": { "customDomain": "os.example.com" }
@@ -72,13 +75,33 @@ The `admins` list gates `/admin` in every method.
 
 #### Cloudflare Access
 
-Create a [self-hosted Access application](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) covering the Workshop hostname. Then configure:
+Create a [self-hosted Access application](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) covering `studio.conveo.ai` in the Cloudflare Zero Trust dashboard, under **Access → Applications**:
+
+| Field | Value |
+| --- | --- |
+| Type | Self-hosted |
+| Name | `Conveo Studio` |
+| Public hostname | `studio.conveo.ai` |
+| Session duration | 24 hours — Studio holds long-lived agent sessions, and a shorter one interrupts a task with a re-auth redirect |
+| Policy | Action **Allow**, include the deployment operators by email to start |
+
+Then read the application's [AUD tag](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/#get-your-aud-tag) into `access.audience`, and your team origin (`https://<team>.cloudflareaccess.com`, from Zero Trust settings) into `access.issuer`.
+
+`wrangler deploy` does not create this, and nothing in this repository does. Wrangler owns routing — the custom-domain DNS record and edge certificate — and has no concept of Zero Trust; there is no `wrangler access` command. Without the application the deployment is both broken and exposed: the Workshop verifies a `cf-access-jwt-assertion` header that never arrives, so every `/api` call is refused, while the router still serves the frontend assets to anyone who asks.
+
+Start the policy as an explicit list of the operators who will run the first deploy, and widen it to "emails ending in `@conveo.ai`" only after the post-deploy verification passes.
+
+Then configure:
 
 - `issuer`: the team origin, such as `https://acme.cloudflareaccess.com`, with no path.
-- `audience`: the application's [AUD tag](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/#get-your-aud-tag).
+- `audience`: the application's AUD tag.
 - `admins`: Access-verified email addresses allowed into `/admin`.
 
-Access policies decide who can sign in. The `admins` list decides which signed-in identities can change runtime policy. Keep both narrow.
+Access policies decide who can sign in. The `admins` list decides which signed-in identities can change runtime policy. Keep both narrow, and keep `admins` a subset of whoever the Access policy admits.
+
+Because the application is created by hand, nothing in `pnpm check` can confirm it points at the right hostname — an Access application on the wrong host does not error, it silently leaves the router unauthenticated. That check moves to the [post-deploy verification](../README.md#5-verify-the-deployment), which is the only place it can happen.
+
+DNS for the hostname belongs to `wrangler deploy`, which creates the custom-domain record and certificate. Do not create a DNS record for `studio.conveo.ai` by hand.
 
 ### Storage
 
@@ -157,6 +180,16 @@ Prefer wrapper-owned Workers and [service bindings](https://developers.cloudflar
 2. Update the submodule to the intended upstream commit.
 3. Review Workshop and Context Wrangler base-config changes and Gatekeeper contracts.
 4. Run `pnpm install`, `pnpm --dir cloudflare-os install`, and `pnpm check`.
+   Upstream builds through **Vite+ (`vp`)** rather than package scripts, so several packages
+   expose no `build` script — `scripts/deploy.mjs` mirrors what each package's own upstream
+   `deploy` script does instead. If a bump moves that around, the `--fail-if-no-match` on every
+   `vp` invocation turns a filter that stopped matching into a loud failure.
+   Two other things travel with the toolchain and are easy to miss:
+   - `pnpm-workspace.yaml` here carries a **copy** of the submodule's `catalog:` entries,
+     because the two upstream packages this workspace includes declare their toolchain that
+     way. A test compares the two and fails on drift.
+   - This repo's own packages extend the submodule's `tsconfig.json`, so an upstream compiler
+     change reaches them. Keep the root `typescript` version equal to the catalog's.
 5. Deploy and verify Access, administrator access, storage, configured AI, Context, custom observations, and the Error Reporter query surface.
 6. If needed, restore the previous gitlink and redeploy, or use [Workers rollback](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/) when bindings remain compatible.
 
