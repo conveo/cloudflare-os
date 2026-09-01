@@ -5,6 +5,13 @@
   // Find it: https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/
   "accountId": "71ae37f53a5609c670ae368438156afa",
 
+  // The deployment's public origin: HTTPS, no path, no trailing slash. null derives it from
+  // workers.router.route.customDomain, which is what we use. It has to be set explicitly on a
+  // workers.dev route, because the account's workers.dev subdomain is not in this file and
+  // wrangler exposes no way to look it up — and both PUBLIC_BASE_URL and every Gatekeeper's
+  // OAuth callback are built from it.
+  "publicBaseUrl": null,
+
   // Worker names are permanent service identities. Keep them unique within the account.
   // Reference: docs/customization.md#workers-and-routing
   //
@@ -32,6 +39,8 @@
     "customGatekeeper": { "name": "conveo-studio-custom" },
     "mcpGatekeeper": { "name": "conveo-studio-mcp" },
     "mcpPortalGatekeeper": { "name": "conveo-studio-mcp-portal" },
+    // Always deployed: upstream stopped gating it, and /admin's three-mode control already
+    // decides whether it is off, opt-in, or provisioned for everyone.
     "scheduler": { "name": "conveo-studio-scheduler" },
     "errorReporter": { "name": "conveo-studio-errors" }
   },
@@ -93,20 +102,6 @@
     "name": "Conveo (agentgateway)"
   },
 
-  // Scheduled Tasks — the mechanism for running work unattended. Agents register persistent
-  // callbacks for elapsed intervals (every, 60s minimum), wall-clock recurrences (calendarAt,
-  // with an explicit IANA timezone), or a single future run, and each account gets a read-only
-  // management view listing them.
-  //
-  // Ambient, so unlike the MCP connectors it serves no HTTP: no router entry, no public URL, no
-  // OAuth callback — just a service binding. Its /admin mode governs whether it is off, opt-in,
-  // or provisioned for everyone; "optional" is the default and does not impose it on anyone.
-  //
-  // Registration deliberately creates a DISABLED hook and returns its id. Someone enables it in
-  // Connections before it runs, so an agent cannot put itself on a schedule unattended.
-  "scheduler": {
-    "enabled": true
-  },
 
   // Deployment-funded model catalog through Cloudflare AI Gateway.
   //
@@ -129,10 +124,7 @@
     "enabled": true,
     "name": "cloudflareos-ai",
     "accountId": "71ae37f53a5609c670ae368438156afa",
-    "providers": ["anthropic", "openai", "google", "cloudflare"],
-
-    // "direct" sends Workers AI to its REST endpoint. "gateway" adds AI Gateway logs.
-    "workersAi": { "mode": "gateway", "gateway": "cloudflareos-ai" }
+    "providers": ["anthropic", "openai", "google", "cloudflare"]
   },
 
   "context": {

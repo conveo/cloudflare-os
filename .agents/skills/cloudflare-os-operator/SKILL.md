@@ -15,7 +15,7 @@ This skill operates the deployment wrapper, not Cloudflare OS in isolation. The 
 Find the repository root containing all of these markers:
 
 - `deployment.jsonc`
-- `scripts/deploy.mjs`
+- `scripts/deploy.ts`
 - `cloudflare-os/`
 - `packages/custom-gatekeeper/`
 - `docs/agentgateway.md` (this deployment's agentgateway integration)
@@ -28,7 +28,7 @@ Before any mutation, always read the current checkout's:
 
 1. `README.md`
 2. `deployment.jsonc`
-3. `scripts/deploy.mjs`
+3. `scripts/deploy.ts`
 4. `package.json`
 5. `.gitmodules`
 6. Available relevant upstream files under `cloudflare-os/`
@@ -294,7 +294,7 @@ Before requesting approval, inventory current deployed version IDs for all affec
 5. Workshop.
 6. Router — last, because it binds every Worker above and is the only public route.
 
-If current `scripts/deploy.mjs` differs, use its order. Breaking cross-Worker contracts need parallel identities and a controlled binding switch, not an in-place sequential deploy.
+If current `scripts/deploy.ts` differs, use its order. Breaking cross-Worker contracts need parallel identities and a controlled binding switch, not an in-place sequential deploy.
 
 Present the production mutation summary from the hard stop. After explicit approval, run:
 
