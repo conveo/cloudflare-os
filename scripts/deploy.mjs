@@ -17,6 +17,7 @@ const generatedPaths = {
   mcpPortalGatekeeper: join(root, "cloudflare-os/packages/gatekeeper-mcp-portal", generatedName),
   errorReporter: join(root, "packages/error-reporter", generatedName),
 };
+const defaultContextArtifactsNamespace = "gatekeeper-context-collections";
 
 const requiredPaths = [
   "accountId",
@@ -264,6 +265,23 @@ export function validateConfig(config) {
     throw new Error("Error reporting release must be null or a non-padded string.");
   }
 
+  const artifactsConfig = config.context.artifacts;
+  if (artifactsConfig !== undefined &&
+      (artifactsConfig === null || typeof artifactsConfig !== "object" ||
+       Array.isArray(artifactsConfig))) {
+    throw new Error("Context Artifacts configuration must be an object when present.");
+  }
+  const artifactsEnabled = artifactsConfig?.enabled;
+  if (artifactsEnabled !== undefined && typeof artifactsEnabled !== "boolean") {
+    throw new Error("Context Artifacts enabled must be a boolean.");
+  }
+  const artifactsNamespace = artifactsConfig?.namespace;
+  if (artifactsNamespace !== undefined &&
+      (typeof artifactsNamespace !== "string" ||
+       !/^[a-z\d][a-z\d._-]*$/i.test(artifactsNamespace))) {
+    throw new Error("Context Artifacts namespace must be omitted or start with a letter or number and use only letters, numbers, dots, underscores, and hyphens.");
+  }
+
   const sampling = config.observability.headSamplingRate;
   if (typeof config.observability.enabled !== "boolean") {
     throw new Error("Observability enabled must be a boolean.");
@@ -415,6 +433,14 @@ export function generateConfigs(config, bases) {
     { binding: "CONTEXT_COLLECTIONS", ...(config.context.kvNamespaceId
       ? { id: config.context.kvNamespaceId } : {}) },
   ];
+  if (config.context.artifacts?.enabled ?? false) {
+    context.artifacts = [{
+      binding: "ARTIFACTS",
+      namespace: config.context.artifacts?.namespace ?? defaultContextArtifactsNamespace,
+    }];
+  } else {
+    delete context.artifacts;
+  }
 
   setCommon(customGatekeeper, config, config.workers.customGatekeeper.name);
   customGatekeeper.vars = {
