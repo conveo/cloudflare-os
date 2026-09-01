@@ -13,10 +13,12 @@ const validConfig = {
     customGatekeeper: { name: "acme-cloudflare-os-custom" },
     mcpGatekeeper: { name: "acme-cloudflare-os-mcp" },
     mcpPortalGatekeeper: { name: "acme-cloudflare-os-mcp-portal" },
+    scheduler: { name: "acme-cloudflare-os-scheduler" },
     errorReporter: { name: "acme-cloudflare-os-errors" },
   },
   mcp: { enabled: true },
   mcpPortal: { enabled: true, url: "https://mcp.example.com/", name: "Acme portal" },
+  scheduler: { enabled: true },
   access: {
     issuer: "https://acme.cloudflareaccess.com",
     audience: "access-audience",
@@ -58,6 +60,7 @@ async function baseConfigs() {
     mcpGatekeeper: await baseConfig("../cloudflare-os/packages/gatekeeper-mcp/wrangler.jsonc"),
     mcpPortalGatekeeper: await baseConfig(
       "../cloudflare-os/packages/gatekeeper-mcp-portal/wrangler.jsonc"),
+    scheduler: await baseConfig("../cloudflare-os/packages/gatekeeper-scheduler/wrangler.jsonc"),
     errorReporter: {
       name: "error-reporter",
       observability: { enabled: true, logs: { invocation_logs: false } },
@@ -66,7 +69,10 @@ async function baseConfigs() {
 }
 
 async function baseConfig(path) {
-  return parse(await readFile(new URL(path, import.meta.url), "utf8"));
+  // Same options as scripts/deploy.mjs, so a base config that parses in a test also
+  // parses in a deploy.
+  return parse(await readFile(new URL(path, import.meta.url), "utf8"), [],
+    { allowTrailingComma: true });
 }
 
 test("rejects deployment placeholders", () => {
@@ -184,6 +190,11 @@ test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", a
     {
       binding: "GATEKEEPER_MCP_PORTAL",
       service: "acme-cloudflare-os-mcp-portal",
+      entrypoint: "GatekeeperVendor",
+    },
+    {
+      binding: "GATEKEEPER_SCHEDULER",
+      service: "acme-cloudflare-os-scheduler",
       entrypoint: "GatekeeperVendor",
     },
   ]);
@@ -319,6 +330,32 @@ test("omits the MCP portal when it is disabled", async () => {
     (service) => service.binding === "GATEKEEPER_MCP_PORTAL"), false);
   assert.equal(generated.router.services.some(
     (service) => service.binding === "GATEKEEPER_MCP_PORTAL"), false);
+});
+
+test("binds Scheduled Tasks without giving it a route", async () => {
+  const generated = generateConfigs(validConfig, await baseConfigs());
+
+  assert.equal(generated.scheduler.name, "acme-cloudflare-os-scheduler");
+  // Ambient: it serves no HTTP, so it takes neither a route nor a router binding. A router
+  // entry would imply a public path that nothing answers on.
+  assert.equal(generated.scheduler.routes, undefined);
+  assert.equal(generated.router.services.some(
+    (service) => service.binding === "GATEKEEPER_SCHEDULER"), false);
+  // Its Durable Object migration must survive from the base config — dropping it would orphan
+  // every registered schedule.
+  assert.ok(generated.scheduler.migrations?.length, "scheduler must keep its DO migrations");
+});
+
+test("omits Scheduled Tasks when it is disabled", async () => {
+  const config = structuredClone(validConfig);
+  config.scheduler = { enabled: false };
+  config.workers.scheduler = { name: "<UNUSED_WORKER_NAME>" };
+
+  const generated = generateConfigs(config, await baseConfigs());
+
+  assert.equal(generated.scheduler, undefined);
+  assert.equal(generated.workshop.services.some(
+    (service) => service.binding === "GATEKEEPER_SCHEDULER"), false);
 });
 
 test("omits disabled backend error reporting", async () => {
