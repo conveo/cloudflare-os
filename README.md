@@ -79,7 +79,7 @@ pnpm --dir cloudflare-os install
 pnpm exec wrangler login
 ```
 
-Your account needs [Workers](https://developers.cloudflare.com/workers/), [KV](https://developers.cloudflare.com/kv/), [R2](https://developers.cloudflare.com/r2/), [Browser Rendering](https://developers.cloudflare.com/browser-rendering/), and [Dynamic Worker Loaders](https://developers.cloudflare.com/workers/runtime-apis/bindings/worker-loader/). AI products are optional.
+Your account needs [Workers](https://developers.cloudflare.com/workers/), [KV](https://developers.cloudflare.com/kv/), [R2](https://developers.cloudflare.com/r2/), [Browser Rendering](https://developers.cloudflare.com/browser-rendering/), and [Dynamic Worker Loaders](https://developers.cloudflare.com/workers/runtime-apis/bindings/worker-loader/). AI products and [Artifacts](https://developers.cloudflare.com/artifacts/) are optional.
 
 ### 2. Configure sign-in
 
@@ -108,6 +108,8 @@ With resource values left as `null`, Wrangler creates the three KV namespaces an
 
 The platform AI catalog is off; models come from [agentgateway](docs/agentgateway.md#models). The application deploys without an AI Gateway or token.
 
+Git-backed Context collections are disabled by default. Accounts with Artifacts access can enable them in `context.artifacts`; see [Context Artifacts](docs/customization.md#context-artifacts).
+
 Backend error reporting is enabled without a vendor account. Explicit upstream issue events become structured logs in the private Error Reporter Worker; see [Observability and error reporting](docs/observability.md).
 
 ### 5. Verify the deployment
@@ -117,6 +119,7 @@ Backend error reporting is enabled without a vendor account. Explicit upstream i
 - Confirm no other Worker answers on a public hostname — the router is the only route.
 - Open `/admin`, confirm the email is an administrator, and set Context, Custom, and MCP connectors to disabled, optional, or enabled deliberately.
 - Connect `https://mcp.ops.conveo.ai/<service>` through the MCP connector, complete the Okta sign-in, and confirm a tool call succeeds and appears in Loki under your own `jwt.email`.
+- If Context Artifacts is enabled, create a Git-backed collection and confirm its repository can be populated and refreshed.
 - Enable the Custom Gatekeeper, ask for deployment information, and confirm its read appears as an observation.
 - Open the Error Reporter Worker's [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) and verify its structured `error_report` query surface.
 - Review logs for the router, Workshop, Context, Gatekeeper, and Error Reporter Workers.
