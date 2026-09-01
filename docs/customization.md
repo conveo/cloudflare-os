@@ -28,7 +28,8 @@ The custom logo appears in the app chrome, sign-in screens, and browser tab on e
 | `accountId` | Resource ownership | A 32-character [Cloudflare account ID](https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/) |
 | `workers.*.name` | Stable Worker service identities | Unique lowercase names; changing one creates a differently named Worker |
 | `workers.router.route` | The deployment's only public address | `customDomain` for production or `workersDev: true` for evaluation. No other Worker may carry a route — one would be a way around Access |
-| `mcp.enabled` | The [agentgateway MCP connector](agentgateway.md) | `true` deploys and binds it; requires `customDomain` |
+| `publicBaseUrl` | The origin every absolute link and OAuth callback is built from | `null` derives it from `customDomain`; required on a `workersDev` route |
+| `mcp.enabled` / `mcpPortal` | The [agentgateway connectors](agentgateway.md) | `true` deploys and binds each; their OAuth callbacks are derived from `publicBaseUrl` |
 | `access` | Cloudflare Access trust and administrator list | Access team issuer, application audience, and verified email list |
 | `aiGateway` | Deployment-funded model catalog | Disabled, Workers AI direct, or provider traffic through AI Gateway |
 | `context` | Context sharing boundary, snapshot KV, and optional Artifacts repositories | A stable domain label; automatic or existing KV; Git-backed collections disabled or enabled |
@@ -67,7 +68,7 @@ Cloudflare OS supports three ways to sign users in. This starter deploys Cloudfl
 | Built-in password accounts | Cloudflare OS serves its own username and password login plus signup. This is the upstream default. | Requires deploy script changes |
 | Auth Gatekeepers | Gatekeepers that advertise `providesAuth` add "Continue with ..." buttons, alongside or instead of password login. | Requires deploy script changes |
 
-Access mode is the default here because unauthenticated requests never reach application code. `scripts/deploy.mjs` implements it by setting `CF_ACCESS_ISS` and `CF_ACCESS_AUD` on the Workshop and building the frontend with `VITE_CF_ACCESS_MODE=true`.
+Access mode is the default here because unauthenticated requests never reach application code. `scripts/deploy.ts` implements it by setting `CF_ACCESS_ISS` and `CF_ACCESS_AUD` on the Workshop and building the frontend with `VITE_CF_ACCESS_MODE=true`.
 
 To run another method, drop those two variables and the build flag, then set upstream's `AUTH_GATEKEEPERS` allowlist for provider sign-in. `DISABLE_PASSWORD_AUTH=true` makes a deployment provider-only. Upstream ignores it unless at least one auth Gatekeeper is allowlisted, so a deployment cannot lock everyone out. The wrapper's validation assumes Access mode, so review the upstream Workshop backend and frontend documentation before changing it.
 
@@ -179,7 +180,7 @@ The starter enables structured custom logs and a private console-backed Error Re
 
 ## Custom Gatekeepers
 
-Keep deployment-owned Gatekeepers under `packages/`, outside the `cloudflare-os` submodule. `scripts/deploy.mjs` binds this repository's example to the Workshop as `GATEKEEPER_CUSTOM` and Context as `GATEKEEPER_CONTEXT`.
+Keep deployment-owned Gatekeepers under `packages/`, outside the `cloudflare-os` submodule. `scripts/deploy.ts` binds this repository's example to the Workshop as `GATEKEEPER_CUSTOM` and Context as `GATEKEEPER_CONTEXT`.
 
 The minimal example flow is:
 
@@ -203,7 +204,7 @@ Prefer wrapper-owned Workers and [service bindings](https://developers.cloudflar
 3. Review Workshop and Context Wrangler base-config changes and Gatekeeper contracts.
 4. Run `pnpm install`, `pnpm --dir cloudflare-os install`, and `pnpm check`.
    Upstream builds through **Vite+ (`vp`)** rather than package scripts, so several packages
-   expose no `build` script — `scripts/deploy.mjs` mirrors what each package's own upstream
+   expose no `build` script — `scripts/deploy.ts` mirrors what each package's own upstream
    `deploy` script does instead. If a bump moves that around, the `--fail-if-no-match` on every
    `vp` invocation turns a filter that stopped matching into a loud failure.
    Two other things travel with the toolchain and are easy to miss:

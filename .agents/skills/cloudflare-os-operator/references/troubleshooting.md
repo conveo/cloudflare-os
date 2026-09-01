@@ -181,7 +181,7 @@ The Reporter must have no public route. Its events remain visible to authorized 
 
 ## Partial Deployment
 
-The baseline sequence is Error Reporter, Context, Custom Gatekeeper, then Workshop. Re-read `scripts/deploy.mjs` for the current sequence.
+The baseline sequence is Error Reporter, Context, Custom Gatekeeper, then Workshop. Re-read `scripts/deploy.ts` for the current sequence.
 
 When deployment stops:
 
@@ -201,7 +201,7 @@ For breaking contracts, do not alternate old/new code under the same service nam
 
 Likely causes after a gitlink update:
 
-- An upstream Wrangler base-config field is overwritten by `scripts/deploy.mjs`.
+- An upstream Wrangler base-config field is overwritten by `scripts/deploy.ts`.
 - Shared RPC or Gatekeeper interfaces changed.
 - Durable Object migrations/classes changed.
 - Storage schema changed.

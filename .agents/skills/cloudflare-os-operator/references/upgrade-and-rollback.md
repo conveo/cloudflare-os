@@ -27,7 +27,7 @@ Audit the old-to-new change for:
 - Error reporting and frontend reporting.
 - Dependencies, lockfiles, build commands, and generated artifacts.
 
-Inspect every base-config section that `scripts/deploy.mjs` replaces or reconstructs. New upstream fields can otherwise be silently dropped. Generate and review sanitized old/new derived-config diffs, but never commit or hand-edit generated Wrangler files.
+Inspect every base-config section that `scripts/deploy.ts` replaces or reconstructs. New upstream fields can otherwise be silently dropped. Generate and review sanitized old/new derived-config diffs, but never commit or hand-edit generated Wrangler files.
 
 Update only the gitlink unless a specific reviewed wrapper compatibility change is required. Install both workspaces and run `pnpm check` plus the relevant upstream tests, lint, and type checks.
 
