@@ -32,6 +32,7 @@
     "customGatekeeper": { "name": "conveo-studio-custom" },
     "mcpGatekeeper": { "name": "conveo-studio-mcp" },
     "mcpPortalGatekeeper": { "name": "conveo-studio-mcp-portal" },
+    "scheduler": { "name": "conveo-studio-scheduler" },
     "errorReporter": { "name": "conveo-studio-errors" }
   },
 
@@ -90,6 +91,21 @@
     "enabled": true,
     "url": "https://mcp.ops.conveo.ai/",
     "name": "Conveo (agentgateway)"
+  },
+
+  // Scheduled Tasks — the mechanism for running work unattended. Agents register persistent
+  // callbacks for elapsed intervals (every, 60s minimum), wall-clock recurrences (calendarAt,
+  // with an explicit IANA timezone), or a single future run, and each account gets a read-only
+  // management view listing them.
+  //
+  // Ambient, so unlike the MCP connectors it serves no HTTP: no router entry, no public URL, no
+  // OAuth callback — just a service binding. Its /admin mode governs whether it is off, opt-in,
+  // or provisioned for everyone; "optional" is the default and does not impose it on anyone.
+  //
+  // Registration deliberately creates a DISABLED hook and returns its id. Someone enables it in
+  // Connections before it runs, so an agent cannot put itself on a schedule unattended.
+  "scheduler": {
+    "enabled": true
   },
 
   // Deployment-funded model catalog through Cloudflare AI Gateway.

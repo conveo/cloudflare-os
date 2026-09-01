@@ -15,6 +15,7 @@ const generatedPaths = {
   customGatekeeper: join(root, "packages/custom-gatekeeper", generatedName),
   mcpGatekeeper: join(root, "cloudflare-os/packages/gatekeeper-mcp", generatedName),
   mcpPortalGatekeeper: join(root, "cloudflare-os/packages/gatekeeper-mcp-portal", generatedName),
+  scheduler: join(root, "cloudflare-os/packages/gatekeeper-scheduler", generatedName),
   errorReporter: join(root, "packages/error-reporter", generatedName),
 };
 const defaultContextArtifactsNamespace = "gatekeeper-context-collections";
@@ -27,6 +28,7 @@ const requiredPaths = [
   "workers.customGatekeeper.name",
   "mcp.enabled",
   "mcpPortal.enabled",
+  "scheduler.enabled",
   "access.issuer",
   "access.audience",
   "access.admins",
@@ -58,6 +60,8 @@ const mcpPaths = ["workers.mcpGatekeeper.name"];
 
 const mcpPortalPaths = ["workers.mcpPortalGatekeeper.name", "mcpPortal.url"];
 
+const schedulerPaths = ["workers.scheduler.name"];
+
 const resourcePaths = [
   "context.kvNamespaceId",
   "resources.blueprintsKvNamespaceId",
@@ -76,6 +80,7 @@ export function validateConfig(config) {
     ...(config.errorReporting?.enabled ? errorReportingPaths : []),
     ...(config.mcp?.enabled ? mcpPaths : []),
     ...(config.mcpPortal?.enabled ? mcpPortalPaths : []),
+    ...(config.scheduler?.enabled ? schedulerPaths : []),
   ];
   for (const path of activePaths) {
     const value = valueAt(config, path);
@@ -119,6 +124,12 @@ export function validateConfig(config) {
       mcpPortal: { enabled: false },
     };
   }
+  if (!config.scheduler.enabled) {
+    activeConfig = {
+      ...activeConfig,
+      workers: { ...activeConfig.workers, scheduler: undefined },
+    };
+  }
   const placeholder = JSON.stringify(activeConfig).match(/<[^>]+>/)?.[0];
   if (placeholder) throw new Error(`Replace deployment placeholder ${placeholder}.`);
 
@@ -129,6 +140,7 @@ export function validateConfig(config) {
     "errorReporting.enabled",
     "mcp.enabled",
     "mcpPortal.enabled",
+    "scheduler.enabled",
     "observability.enabled",
     "observability.headSamplingRate",
     "observability.logs.invocationLogs",
@@ -149,6 +161,7 @@ export function validateConfig(config) {
     errorReporter: !config.errorReporting.enabled,
     mcpGatekeeper: !config.mcp.enabled,
     mcpPortalGatekeeper: !config.mcpPortal.enabled,
+    scheduler: !config.scheduler.enabled,
   };
   const workerNames = Object.entries(config.workers)
     .filter(([key]) => !inactiveWorkers[key])
@@ -191,6 +204,10 @@ export function validateConfig(config) {
   // workers.dev address is only knowable after the first deploy.
   if (config.mcp.enabled && !route.customDomain) {
     throw new Error("The MCP Gatekeeper requires workers.router.route.customDomain.");
+  }
+
+  if (typeof config.scheduler.enabled !== "boolean") {
+    throw new Error("Scheduled Tasks enabled must be a boolean.");
   }
 
   if (typeof config.mcpPortal.enabled !== "boolean") {
@@ -351,6 +368,9 @@ export function generateConfigs(config, bases) {
   const mcpPortalGatekeeper = config.mcpPortal.enabled
     ? structuredClone(bases.mcpPortalGatekeeper)
     : undefined;
+  const scheduler = config.scheduler.enabled
+    ? structuredClone(bases.scheduler)
+    : undefined;
   const errorReporter = config.errorReporting.enabled
     ? structuredClone(bases.errorReporter)
     : undefined;
@@ -417,6 +437,13 @@ export function generateConfigs(config, bases) {
       service: config.workers.mcpPortalGatekeeper.name,
       entrypoint: "GatekeeperVendor",
     }] : []),
+    // Ambient: it registers callbacks through the binding and serves no HTTP of its own, so
+    // unlike the MCP connectors it needs no router entry and no public URL.
+    ...(config.scheduler.enabled ? [{
+      binding: "GATEKEEPER_SCHEDULER",
+      service: config.workers.scheduler.name,
+      entrypoint: "GatekeeperVendor",
+    }] : []),
   ];
   workshop.kv_namespaces = [
     { binding: "BLUEPRINTS", ...(config.resources.blueprintsKvNamespaceId
@@ -481,6 +508,10 @@ export function generateConfigs(config, bases) {
     };
   }
 
+  if (scheduler) {
+    setCommon(scheduler, config, config.workers.scheduler.name);
+  }
+
   if (errorReporter) {
     setCommon(errorReporter, config, config.workers.errorReporter.name);
   }
@@ -516,6 +547,7 @@ export function generateConfigs(config, bases) {
     customGatekeeper,
     ...(mcpGatekeeper && { mcpGatekeeper }),
     ...(mcpPortalGatekeeper && { mcpPortalGatekeeper }),
+    ...(scheduler && { scheduler }),
     ...(errorReporter && { errorReporter }),
     // Last: every binding it names must already exist.
     router,
@@ -524,7 +556,10 @@ export function generateConfigs(config, bases) {
 
 async function readJsonc(path) {
   const errors = [];
-  const result = parse(await readFile(path, "utf8"), errors);
+  // Trailing commas are valid JSONC and Wrangler accepts them — upstream's own base configs use
+  // them. Without this the reader is stricter than the format it claims to read, and rejects a
+  // file that deploys fine, naming a byte offset rather than the reason.
+  const result = parse(await readFile(path, "utf8"), errors, { allowTrailingComma: true });
   if (errors.length) {
     const where = relative(root, path) || path;
     throw new Error(`${where}: ${printParseErrorCode(errors[0].error)} at offset ${errors[0].offset}`);
@@ -586,6 +621,9 @@ function build(config) {
   if (config.mcpPortal.enabled) {
     vp("@gadgets/mcp-portal-gatekeeper", "build:configurator");
   }
+  if (config.scheduler.enabled) {
+    vp("@gadgets/gatekeeper-scheduler", "build:app");
+  }
   if (config.errorReporting.enabled) {
     run(["--dir", "packages/error-reporter", "run", "build"]);
   }
@@ -606,6 +644,8 @@ async function main() {
     mcpGatekeeper: await readJsonc(join(root, "cloudflare-os/packages/gatekeeper-mcp/wrangler.jsonc")),
     mcpPortalGatekeeper: await readJsonc(
       join(root, "cloudflare-os/packages/gatekeeper-mcp-portal/wrangler.jsonc")),
+    scheduler: await readJsonc(
+      join(root, "cloudflare-os/packages/gatekeeper-scheduler/wrangler.jsonc")),
     errorReporter: await readJsonc(join(root, "packages/error-reporter/wrangler.jsonc")),
   });
 
@@ -632,6 +672,10 @@ async function main() {
     if (config.mcpPortal.enabled) {
       run(["exec", "wrangler", "deploy", "--config", generatedName, ...deployArgs],
         join(root, "cloudflare-os/packages/gatekeeper-mcp-portal"));
+    }
+    if (config.scheduler.enabled) {
+      run(["exec", "wrangler", "deploy", "--config", generatedName, ...deployArgs],
+        join(root, "cloudflare-os/packages/gatekeeper-scheduler"));
     }
     run(["exec", "wrangler", "deploy", "--config", generatedName, ...deployArgs],
       join(root, "cloudflare-os/packages/workshop-backend"));
