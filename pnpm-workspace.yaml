@@ -1,6 +1,10 @@
 packages:
   - cloudflare-os/packages/workshop-shared
   - cloudflare-os/packages/error-reporting
+  # The submodule's shared build tooling, which it packaged as `@gadgets/scripts` in its #431.
+  # A workspace member rather than a path dependency because that is how error-reporting depends
+  # on it (`workspace:*`), and pnpm resolves that against THIS workspace, not the submodule's.
+  - cloudflare-os/scripts
   - packages/*
 
 # Mirror of cloudflare-os/pnpm-workspace.yaml's catalog. Required, not merely tidy: the two
@@ -19,6 +23,9 @@ packages:
 # disagreement, so a bump cannot quietly leave the two apart.
 catalog:
   '@cloudflare/vitest-pool-workers': ^0.22.0
+  # workshop-shared declares this as a runtime dependency, so it resolves here rather than in the
+  # submodule -- omitting it fails `pnpm install` outright, not merely typechecking.
+  '@cloudflare/workers-types': ^5.20260903.1
   capnweb: ^0.12.0
   # Exact: pinned in lockstep with capnweb (declared as a >=0.7.0 peer)
   capnweb-validate: 0.3.0
@@ -31,7 +38,7 @@ catalog:
   vite: 7.3.6
   vite-plus: ^0.2.8
   vitest: ^4.1.10
-  wrangler: ^4.125.0
+  wrangler: ^4.128.0
 
 allowBuilds:
   esbuild: true
