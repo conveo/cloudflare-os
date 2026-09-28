@@ -33,12 +33,18 @@ catalog:
   # rejects outright, so every package extending it has to be on 7.x. Nothing here uses the JS
   # compiler API, so the submodule's `typescript6` alias is not needed.
   typescript: 7.0.2
+  # The JS compiler API, aliased so it can sit beside tsgo. `@gadgets/scripts` is a member of this
+  # workspace (it is how error-reporting resolves `workspace:*`), and upstream moved this from a
+  # plain dependency to a `catalog:` spec, so the entry has to exist here too.
+  typescript6: npm:typescript@6.0.3
   # Exact, not ranged: the transform has to stay on esbuild. Oxc does not lower the Stage-3
   # decorators capnweb-validate's `@validateRpc()` relies on (cloudflare/workers-sdk#12626).
   vite: 7.3.6
   vite-plus: ^0.2.8
-  vitest: ^4.1.10
-  wrangler: ^4.128.0
+  vitest: ^4.1.11
+  wrangler: ^4.138.0
+  # Also `@gadgets/scripts`: the eval workflow added upstream declares it as a `catalog:` spec.
+  zod: ^4.5.4
 
 allowBuilds:
   esbuild: true
