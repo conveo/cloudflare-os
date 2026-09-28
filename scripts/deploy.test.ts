@@ -737,6 +737,27 @@ function readCatalog(text: string): Record<string, string> | null {
   return entries;
 }
 
+/**
+ * The submodule-rooted entries of our own `packages:` block — the submodule packages that are
+ * members of THIS workspace, and so resolve their `catalog:` specs against the catalog above.
+ * Same flat-YAML approach, and the same intolerance of a line it cannot parse.
+ */
+function readSubmoduleMembers(text: string): string[] {
+  const lines = text.split("\n");
+  const start = lines.findIndex((line) => line.trim() === "packages:");
+  if (start === -1) throw new Error("this workspace declares no packages block");
+  const body = lines.slice(start + 1)
+      .filter((line) => line.trim() && !line.trimStart().startsWith("#"));
+  const end = body.findIndex((line) => !line.startsWith("  "));
+  return (end === -1 ? body : body.slice(0, end))
+      .map((line) => {
+        const match = line.match(/^ {2}- (\S+)\s*$/);
+        if (!match) throw new Error(`Unparsed packages line: ${line}`);
+        return match[1];
+      })
+      .filter((entry) => entry.startsWith("cloudflare-os/") && !entry.includes("*"));
+}
+
 test("keeps the workspace catalog in step with the submodule's", async () => {
   const read = async (path: string) => readFile(new URL(path, import.meta.url), "utf8");
   const ours = readCatalog(await read("../pnpm-workspace.yaml"));
@@ -751,9 +772,14 @@ test("keeps the workspace catalog in step with the submodule's", async () => {
   }
 
   // And every `catalog:` spec the included submodule packages declare must be covered, which is
-  // the install-time failure this guard exists to pre-empt.
-  for (const pkg of ["workshop-shared", "error-reporting"]) {
-    const manifest = JSON.parse(await read(`../cloudflare-os/packages/${pkg}/package.json`));
+  // the install-time failure this guard exists to pre-empt. The member list is read from our own
+  // workspace file rather than written out here: a hardcoded pair silently stopped covering
+  // `cloudflare-os/scripts` the moment it was added as a member, and `typescript6` then reached
+  // `pnpm install` unannounced.
+  const members = readSubmoduleMembers(await read("../pnpm-workspace.yaml"));
+  assert.ok(members.length > 0, "this workspace must include at least one submodule package");
+  for (const pkg of members) {
+    const manifest = JSON.parse(await read(`../${pkg}/package.json`));
     for (const section of ["dependencies", "devDependencies", "peerDependencies"]) {
       for (const [name, spec] of Object.entries(manifest[section] ?? {})) {
         if (typeof spec === "string" && spec.startsWith("catalog:")) {
