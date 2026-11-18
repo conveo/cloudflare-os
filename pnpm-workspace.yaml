@@ -39,8 +39,8 @@ catalog:
   typescript6: npm:typescript@6.0.3
   # Exact, not ranged: the transform has to stay on esbuild. Oxc does not lower the Stage-3
   # decorators capnweb-validate's `@validateRpc()` relies on (cloudflare/workers-sdk#12626).
-  vite: 7.3.6
-  vite-plus: ^0.2.8
+  vite: 7.3.8
+  vite-plus: ~1.5.1
   vitest: ^4.1.11
   wrangler: ^4.138.0
   # Also `@gadgets/scripts`: the eval workflow added upstream declares it as a `catalog:` spec.
