@@ -14,7 +14,7 @@
     "deploy": "node scripts/deploy.ts"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/vitest-plugin": "catalog:",
     "@types/node": "26.1.0",
     "jsonc-parser": "^3.3.1",
     "typescript": "7.0.2",
